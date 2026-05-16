@@ -159,7 +159,9 @@ def init(non_interactive: bool) -> None:
     icl_base = os.environ.get("BLF_ICL_ENDPOINT", "https://icl.blindference.xyz")
     click.echo(f"\nConnecting to ICL at {icl_base} ...")
 
-    password = os.environ.get("BLF_KEY_PASSWORD", "")
+    password = os.environ.get("BLF_KEY_PASSWORD")
+    if password is None:
+        password = click.prompt("Wallet decryption password", hide_input=True)
     wallet_obj = load_wallet(keystore_path, password)
     icl = ICLClient(icl_base, wallet_obj)
 
