@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blindference-node"
+version = "0.2.0"
+description = "Blindference Node – Confidential inference worker for agentic AI."
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.0",
+    "web3>=6.0",
+    "eth-account>=0.10",
+    "cryptography>=41.0",
+    "pydantic>=2.0",
+    "rich>=13.0",
+    "PyYAML>=6.0",
+    "aiohttp>=3.9",
+]
+readme = "README.md"
+license = {file = "LICENSE"}
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+gpu = [
+    "vllm>=0.4",
+    "torch>=2.1",
+]
+
+[project.scripts]
+blindference-node = "blindference_node.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["blindference_node*"]

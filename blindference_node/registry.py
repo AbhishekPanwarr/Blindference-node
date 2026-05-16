@@ -1,0 +1,402 @@
+"""On‑chain contract wrappers for Blindference node registration."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import time
+from typing import Any
+
+from eth_account.messages import encode_defunct
+from eth_account.signers.local import LocalAccount
+
+from blindference_node.config import Config
+
+# ---------------------------------------------------------------------------
+# Paths & addresses
+# ---------------------------------------------------------------------------
+
+_ABI_DIR = os.path.join(os.path.dirname(__file__), "..", "contracts", "abis")
+
+# Arbitrum Sepolia (chain 421614) — proxy addresses
+_CONTRACTS = {
+    "fhenix_testnet": {
+        "NodeAttestationRegistry": "0xB54e019e9717a8Ed4746bA9d7F1A3F83cf0a35E0",
+        "NodeOperatorRegistry": "0x0000000000000000000000000000000000000000",
+        "PromptKeyStore": "0x597ed3E3a442ebB31481AC3BAc98815F98ED6B44",
+        "ExecutionCommitmentRegistry": "0xcd45aefE9a16772528fa30B7d47958a95e83440C",
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_abi(name: str) -> list[dict[str, Any]]:
+    path = os.path.join(_ABI_DIR, f"{name}.json")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"ABI file not found: {path}")
+    with open(path) as f:
+        data = json.load(f)
+    return data["abi"]
+
+
+def _get_contract(w3, name: str, address: str):
+    return w3.eth.contract(address=address, abi=_load_abi(name))
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
+def get_node_registry(w3):
+    """Return a ``NodeAttestationRegistry`` contract handle for *w3*."""
+    network_contracts = _CONTRACTS.get("fhenix_testnet", {})
+    addr = network_contracts.get("NodeAttestationRegistry", "")
+    if not addr or addr == "0x" + "0" * 40:
+        raise ValueError("NodeAttestationRegistry address not configured")
+    return _get_contract(w3, "NodeAttestationRegistry", addr)
+
+
+def get_node_operator_registry(w3):
+    """Return ``NodeOperatorRegistry`` contract handle, or ``None`` if not deployed."""
+    network_contracts = _CONTRACTS.get("fhenix_testnet", {})
+    addr = network_contracts.get("NodeOperatorRegistry", "")
+    if not addr or addr == "0x" + "0" * 40 or int(addr, 16) == 0:
+        return None
+    return _get_contract(w3, "NodeOperatorRegistry", addr)
+
+
+def register_node(
+    w3,
+    config: Config,
+    wallet: LocalAccount,
+    stake_wei: int,
+    cert_hash: str,
+) -> str | None:
+    """Register this node on‑chain with best‑effort contract resolution.
+
+    Attempts (in order):
+        1. ``NodeOperatorRegistry.register(…)`` (if deployed).
+        2. ``NodeAttestationRegistry.commit(…)`` as a fallback attestation record.
+        3. Logs a warning if neither path is viable.
+
+    Args:
+        w3: A connected ``Web3`` instance.
+        config: The node ``Config``.
+        wallet: The unlocked node wallet (for signing).
+        stake_wei: Native token amount to stake (in wei).
+        cert_hash: The attestation certificate hash from the ICL.
+
+    Returns:
+        Transaction hash (hex) on success, or ``None`` if registration was
+        skipped (e.g. no contract available).
+    """
+    operator_registry = get_node_operator_registry(w3)
+
+    # ── path 1: NodeOperatorRegistry ──────────────────────────────────
+    if operator_registry is not None:
+        return _register_via_operator_registry(
+            w3, operator_registry, config, wallet, stake_wei, cert_hash
+        )
+
+    # ── path 2: NodeAttestationRegistry.commit ────────────────────────
+    attestation_registry = None
+    try:
+        attestation_registry = get_node_registry(w3)
+    except (ValueError, FileNotFoundError):
+        pass
+
+    if attestation_registry is not None:
+        return _register_via_attestation_commit(
+            w3, attestation_registry, config, wallet, cert_hash
+        )
+
+    # ── path 3: no viable contract ────────────────────────────────────
+    print(
+        "Warning: No on‑chain registration contract is available. "
+        "The node will not be registered on‑chain, but the ICL may still "
+        "include it in job assignments after successful attestation.",
+        file=sys.stderr,
+    )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Path 1 — NodeOperatorRegistry.register()
+# ---------------------------------------------------------------------------
+
+
+def _register_via_operator_registry(
+    w3,
+    contract,
+    config: Config,
+    wallet: LocalAccount,
+    stake_wei: int,
+    cert_hash: str,
+) -> str:
+    print(f"Registering via NodeOperatorRegistry … stake={stake_wei} wei")
+
+    # Convert tier → model_tiers (uint8 list matching supported models)
+    model_tiers: list[int] = [config.tier for _ in config.supported_model_ids]
+
+    tx = contract.functions.register(
+        cert_hash,  # ipfsCID — we store the cert hash as identifier
+        model_tiers,
+        "unknown",  # location
+        config.zdr_compliant,
+        "global",   # jurisdiction
+    ).build_transaction(
+        {
+            "from": wallet.address,
+            "value": stake_wei,
+            "nonce": w3.eth.get_transaction_count(wallet.address),
+            "gas": 500_000,
+            "gasPrice": w3.eth.gas_price,
+        }
+    )
+
+    signed = wallet.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    print(f"Registered on‑chain — tx: {receipt.transactionHash.hex()}")
+    return receipt.transactionHash.hex()
+
+
+# ---------------------------------------------------------------------------
+# Path 2 — NodeAttestationRegistry.commit()
+# ---------------------------------------------------------------------------
+
+_DEFAULT_ATTESTATION_TYPE = bytes.fromhex(
+    "424c494e44464552454e43452d4e4f44452d4154544553544154494f4e"
+)  # "BLINDFERENCE-NODE-ATTESTATION" (28 bytes, padded to 32)
+
+
+def _register_via_attestation_commit(
+    w3,
+    contract,
+    config: Config,
+    wallet: LocalAccount,
+    cert_hash: str,
+) -> str:
+    print("Registering via NodeAttestationRegistry.commit() …")
+
+    doc_hash = _to_bytes32(cert_hash)
+    now = int(time.time())
+    effective_at = now
+    expires_at = now + 172_800  # 48 hours
+    counterparty = "0x0000000000000000000000000000000000000000"
+
+    # Compute the EIP‑712‑style digest that the contract expects us to sign
+    digest = contract.functions.digest(
+        wallet.address,
+        _DEFAULT_ATTESTATION_TYPE,
+        doc_hash,
+        counterparty,
+        effective_at,
+        expires_at,
+    ).call()
+
+    # Sign the digest
+    message = encode_defunct(hexstr=digest.hex())
+    signed = wallet.sign_message(message)
+
+    tx = contract.functions.commit(
+        wallet.address,
+        _DEFAULT_ATTESTATION_TYPE,
+        doc_hash,
+        counterparty,
+        effective_at,
+        expires_at,
+        signed.signature,
+    ).build_transaction(
+        {
+            "from": wallet.address,
+            "nonce": w3.eth.get_transaction_count(wallet.address),
+            "gas": 300_000,
+            "gasPrice": w3.eth.gas_price,
+        }
+    )
+
+    signed_tx = wallet.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    print(f"Attestation committed — tx: {receipt.transactionHash.hex()}")
+    return receipt.transactionHash.hex()
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Heartbeat & Attestation updates
+# ---------------------------------------------------------------------------
+
+
+def update_heartbeat(w3, config: Config, wallet: LocalAccount) -> None:
+    """Send an on‑chain heartbeat to keep the node active.
+
+    If ``NodeOperatorRegistry`` is deployed, calls ``updateHeartbeat()``.
+    Otherwise logs a warning — the ICL will still track liveness via its
+    own heartbeat endpoint (Phase 3+).
+
+    Never raises; failures are logged and skipped.
+    """
+    operator_registry = get_node_operator_registry(w3)
+    if operator_registry is not None:
+        try:
+            tx = operator_registry.functions.updateHeartbeat().build_transaction(
+                {
+                    "from": wallet.address,
+                    "nonce": w3.eth.get_transaction_count(wallet.address),
+                    "gas": 100_000,
+                    "gasPrice": w3.eth.gas_price,
+                }
+            )
+            signed = wallet.sign_transaction(tx)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            print(f"Heartbeat sent — tx: {tx_hash.hex()}")
+        except Exception as exc:
+            print(f"Heartbeat failed: {exc}", file=sys.stderr)
+        return
+
+    print("Heartbeat skipped: NodeOperatorRegistry not deployed", file=sys.stderr)
+
+
+def update_attestation(
+    w3,
+    config: Config,
+    wallet: LocalAccount,
+    cert_hash: str,
+    expiry: int,
+) -> None:
+    """Record a renewed attestation certificate on‑chain.
+
+    Currently a stub — logs the new certificate details.  A future
+    implementation will call ``NodeAttestationRegistry.commit()`` or
+    the equivalent on the operator registry.
+    """
+    print(
+        f"Attestation update on‑chain: certHash={cert_hash}, expiry={expiry}",
+        file=sys.stderr,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Commitment posting (on‑chain, opt‑in)
+# ---------------------------------------------------------------------------
+
+
+def get_commitment_registry(w3):
+    """Return an ``ExecutionCommitmentRegistry`` contract handle, or ``None``."""
+    network_contracts = _CONTRACTS.get("fhenix_testnet", {})
+    addr = network_contracts.get("ExecutionCommitmentRegistry", "")
+    if not addr or addr == "0x" + "0" * 40 or int(addr, 16) == 0:
+        return None
+    try:
+        return _get_contract(w3, "ExecutionCommitmentRegistry", addr)
+    except FileNotFoundError:
+        return None
+
+
+def post_commitment_seal(
+    w3,
+    wallet: LocalAccount,
+    invocation_id: int,
+    role: int,
+    digest: bytes,
+) -> str | None:
+    """Post a sealed commitment to ``ExecutionCommitmentRegistry.commit()``.
+
+    Args:
+        w3: Connected Web3 instance.
+        wallet: The node wallet for signing.
+        invocation_id: The on‑chain invocation identifier.
+        role: 0 = leader, 1 = verifier.
+        digest: 32‑byte commitment digest.
+
+    Returns:
+        Transaction hash, or ``None`` if the registry is not available.
+    """
+    contract = get_commitment_registry(w3)
+    if contract is None:
+        print("Commitment seal skipped: ExecutionCommitmentRegistry not deployed",
+              file=sys.stderr)
+        return None
+
+    try:
+        tx = contract.functions.commit(
+            invocation_id, role, digest
+        ).build_transaction({
+            "from": wallet.address,
+            "nonce": w3.eth.get_transaction_count(wallet.address),
+            "gas": 200_000,
+            "gasPrice": w3.eth.gas_price,
+        })
+        signed = wallet.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        return receipt.transactionHash.hex()
+    except Exception as exc:
+        print(f"Commitment seal failed: {exc}", file=sys.stderr)
+        return None
+
+
+def post_commitment_reveal(
+    w3,
+    wallet: LocalAccount,
+    invocation_id: int,
+    role: int,
+    output_handle: bytes,
+    salt: bytes,
+) -> str | None:
+    """Reveal a previously sealed commitment.
+
+    Args:
+        w3: Connected Web3 instance.
+        wallet: The node wallet for signing.
+        invocation_id: The on‑chain invocation identifier.
+        role: 0 = leader, 1 = verifier.
+        output_handle: 32‑byte hash of the output CID.
+        salt: 32‑byte salt (use SHA‑256 of output text).
+
+    Returns:
+        Transaction hash, or ``None`` if the registry is not available.
+    """
+    contract = get_commitment_registry(w3)
+    if contract is None:
+        return None
+
+    try:
+        tx = contract.functions.reveal(
+            invocation_id, role, output_handle, salt
+        ).build_transaction({
+            "from": wallet.address,
+            "nonce": w3.eth.get_transaction_count(wallet.address),
+            "gas": 200_000,
+            "gasPrice": w3.eth.gas_price,
+        })
+        signed = wallet.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        return receipt.transactionHash.hex()
+    except Exception as exc:
+        print(f"Commitment reveal failed: {exc}", file=sys.stderr)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+
+def _to_bytes32(value: str) -> bytes:
+    """Convert a hex string or arbitrary string to a 32‑byte value."""
+    if value.startswith("0x") or value.startswith("0X"):
+        raw = bytes.fromhex(value[2:])
+    else:
+        raw = value.encode("utf-8")
+    if len(raw) > 32:
+        import hashlib
+        return hashlib.sha256(raw).digest()
+    return raw.ljust(32, b"\x00")

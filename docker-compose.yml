@@ -1,0 +1,19 @@
+version: "3.8"
+
+services:
+  blindference-node:
+    build:
+      context: .
+    image: blindference-node:0.1.0
+    entrypoint: ["blindference-node"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    volumes:
+      - ~/.blindference:/root/.blindference
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
