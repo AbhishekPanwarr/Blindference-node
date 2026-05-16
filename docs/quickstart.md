@@ -82,6 +82,20 @@ blindference-node status
 
 Displays node address, tier, stake, attestation validity, and recent job history.
 
+## Testing Determinism
+
+Verify that your GPU produces byte‑identical outputs:
+
+```bash
+blindference-node test-determinism --model facebook/opt-125m
+```
+
+This loads a lightweight 125M‑parameter model (~500 MB VRAM), runs the same prompt twice, and confirms the outputs match. Requires `pip install blindference-node[gpu]`.
+
+## Linking an Escrow
+
+To automatically receive USDC payouts for verified inference, link your job to a Reineira escrow. See the [Settlement Guide](./settlement.md) for step‑by‑step instructions.
+
 ## Troubleshooting
 
 | Problem | Solution |
@@ -97,4 +111,5 @@ Displays node address, tier, stake, attestation validity, and recent job history
 
 - [Hardware Requirements](./hardware.md) — GPU tier details and TEE support.
 - [Attestation Guide](./attestation.md) — How attestation works and future backends.
+- [Settlement Guide](./settlement.md) — Reineira escrow and automatic payouts.
 - [Slashing & Recovery](./slashing.md) — What can get you slashed and how to recover.

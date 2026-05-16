@@ -367,6 +367,47 @@ def attest() -> None:
 
 
 # ---------------------------------------------------------------------------
+# test-determinism
+# ---------------------------------------------------------------------------
+
+
+@main.command("test-determinism")
+@click.option("--model", default="facebook/opt-125m", help="Model ID for the determinism test")
+@click.option("--prompt", default="Hello, Blindference", help="Prompt to use for the test")
+def test_determinism(model: str, prompt: str) -> None:
+    """Run real-GPU determinism self‑test — requires vLLM.
+
+    Downloads and loads the specified model, runs the same prompt twice,
+    and compares the outputs byte‑for‑byte.
+    """
+    try:
+        from vllm import LLM, SamplingParams
+    except (ImportError, ModuleNotFoundError):
+        click.echo(
+            "Error: This command requires a GPU with vLLM installed.\n"
+            "Install GPU dependencies: pip install blindference-node[gpu]",
+            err=True,
+        )
+        raise SystemExit(1)
+
+    click.echo(f"Model:  {model}")
+    click.echo(f"Prompt: {prompt}")
+    click.echo("Loading model (this may take a moment) …")
+
+    try:
+        from blindference_node.execution import run_deterministic_inference
+        from blindference_node.execution import run_determinism_self_test
+
+        run_determinism_self_test(model_id=model, test_prompt=prompt)
+        click.echo("\nDeterminism self‑test PASSED")
+        click.echo("Byte‑identical outputs confirmed.")
+    except RuntimeError as exc:
+        click.echo(f"\n{exc}", err=True)
+        click.echo("Determinism self‑test FAILED", err=True)
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
 # withdraw (stub)
 # ---------------------------------------------------------------------------
 

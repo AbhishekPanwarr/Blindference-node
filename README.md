@@ -1,6 +1,6 @@
 # Blindference Node
 
-**Version 0.2.0** — Confidential inference worker for agentic AI.
+**Version 0.3.0** — Confidential inference worker for agentic AI.
 
 Register your GPU machine as a compute provider in the Blindference network. Run encrypted inference jobs, earn fees, and help build a private, verifiable, and economically accountable AI execution layer.
 

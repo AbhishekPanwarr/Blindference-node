@@ -14,12 +14,15 @@ Blindference assigns each node a tier based on available VRAM. The tier determin
 
 | Model | VRAM Required | Tier |
 |---|---|---|
+| OPT-125M | ~500 MB | 0 (test only) |
 | Qwen2.5-7B-Instruct | ~14 GB | 0+ |
 | Qwen2.5-14B-Instruct | ~28 GB | 1+ |
 | QwQ-32B-Preview | ~65 GB | 2+ |
 | Llama-3.1-70B-Instruct | ~80 GB | 2 |
 
 Multi‑GPU configurations are not supported in v1. Models use a single GPU.
+
+For determinism self‑testing without full model VRAM requirements, use `facebook/opt-125m` (~500 MB). This is the minimum viable model for confirming byte‑identical outputs. It is not used for production inference — only for the `test-determinism` command.
 
 ## TEE-Capable CPUs
 

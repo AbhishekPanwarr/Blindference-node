@@ -46,9 +46,17 @@ def run_deterministic_inference(model_id: str, prompt: str) -> str:
     return f"MOCK_OUTPUT_{h}"
 
 
-def run_determinism_self_test() -> bool:
+def run_determinism_self_test(
+    model_id: str = "qwen2.5-7b",
+    test_prompt: str = "Hello, Blindference",
+) -> bool:
     """Verify that ``run_deterministic_inference`` produces identical output
     for the same input across two independent calls.
+
+    Args:
+        model_id: The model to test. Defaults to ``"qwen2.5-7b"``.
+            Use ``"facebook/opt-125m"`` for a lightweight GPU test (~500 MB VRAM).
+        test_prompt: The prompt to use for both runs.
 
     Returns:
         ``True`` if the self‑test passes.
@@ -56,8 +64,7 @@ def run_determinism_self_test() -> bool:
     Raises:
         RuntimeError: if the outputs differ.
     """
-    test_prompt = "Hello, Blindference"
-    test_model = "qwen2.5-7b"
+    test_model = model_id
 
     output1 = run_deterministic_inference(test_model, test_prompt)
     output2 = run_deterministic_inference(test_model, test_prompt)
