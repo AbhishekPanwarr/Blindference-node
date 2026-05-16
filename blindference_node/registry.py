@@ -24,7 +24,7 @@ _CONTRACTS = {
     "fhenix_testnet": {
         "NodeAttestationRegistry": "0xB54e019e9717a8Ed4746bA9d7F1A3F83cf0a35E0",
         "NodeOperatorRegistry": "0x0000000000000000000000000000000000000000",
-        "PromptKeyStore": "0x597ed3E3a442ebB31481AC3BAc98815F98ED6B44",
+        "PromptKeyStore": "0xFe47F3963C506C44eC659f3c904ef74Ab40456C5",
         "ExecutionCommitmentRegistry": "0xcd45aefE9a16772528fa30B7d47958a95e83440C",
     },
 }
@@ -382,6 +382,64 @@ def post_commitment_reveal(
         return receipt.transactionHash.hex()
     except Exception as exc:
         print(f"Commitment reveal failed: {exc}", file=sys.stderr)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Output key storage
+# ---------------------------------------------------------------------------
+
+
+def store_output_key(
+    w3,
+    config: Config,
+    wallet: LocalAccount,
+    job_id: str,
+    high_handle: int,
+    low_handle: int,
+    user_address: str,
+) -> dict | None:
+    """Store the output AES key halves on‑chain via PromptKeyStore.
+
+    Calls ``PromptKeyStore.storeOutputKey(bytes32 jobId, uint256 KoH, uint256 KoL, address user)``.
+    When ``config.skip_output_key_storage`` is ``True``, logs the intent and returns a dummy result
+    without sending an on‑chain transaction.
+    """
+    if config.skip_output_key_storage:
+        print(
+            f"Output key storage skipped (skip_output_key_storage=True): "
+            f"job={job_id} user={user_address} handles={high_handle},{low_handle}",
+            file=sys.stderr,
+        )
+        return {"status": "skipped", "tx_hash": None}
+
+    network_contracts = _CONTRACTS.get(config.network, {})
+    addr = network_contracts.get("PromptKeyStore", "")
+    if not addr or int(addr, 16) == 0:
+        print("Output key storage skipped: PromptKeyStore not configured", file=sys.stderr)
+        return None
+
+    try:
+        contract = _get_contract(w3, "PromptKeyStore", addr)
+        job_id_bytes = bytes.fromhex(job_id.replace("0x", ""))
+        tx = contract.functions.storeOutputKey(
+            job_id_bytes,
+            high_handle,
+            low_handle,
+            w3.to_checksum_address(user_address),
+        ).build_transaction({
+            "from": wallet.address,
+            "nonce": w3.eth.get_transaction_count(wallet.address),
+            "gas": 300_000,
+            "gasPrice": w3.eth.gas_price,
+        })
+        signed = wallet.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        print(f"Output key stored on‑chain — tx: {receipt.transactionHash.hex()}")
+        return {"status": "stored", "tx_hash": receipt.transactionHash.hex()}
+    except Exception as exc:
+        print(f"Output key storage failed: {exc}", file=sys.stderr)
         return None
 
 

@@ -33,6 +33,10 @@ class Config(BaseModel):
     attestation_cert_hash: str = ""
     attestation_expiry: int = 0
     stake_amount_wei: int = 0
+    cofhe_mode: str = "mock"
+    cofhe_endpoint: str = "https://cofhe-api.fhenix.zone"
+    cofhe_chain_id: int = 421614
+    skip_output_key_storage: bool = False
 
 
 def _env_override(key: str, value: Any) -> Any:

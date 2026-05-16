@@ -12,7 +12,7 @@ from web3 import Web3
 
 from blindference_node.attestation.mock import MockAttestationBackend
 from blindference_node.config import Config, save_config
-from blindference_node.crypto import MockCoFHEClient
+from blindference_node.crypto import CoFHEClient, get_cofhe_client
 from blindference_node.icl_client import ICLClient
 from blindference_node.ipfs_client import IPFSClient
 from blindference_node.job_handler import handle_job
@@ -146,7 +146,7 @@ async def assignment_poller(
     w3: Web3,
     wallet: LocalAccount,
     ipfs: IPFSClient,
-    cofhe: MockCoFHEClient,
+    cofhe: CoFHEClient,
     concurrent_jobs: asyncio.Semaphore,
 ) -> None:
     """Poll ICL for pending job assignments every 5 seconds.
@@ -182,7 +182,7 @@ async def _job_wrapper(
     w3: Web3,
     icl: ICLClient,
     ipfs: IPFSClient,
-    cofhe: MockCoFHEClient,
+    cofhe: CoFHEClient,
     sem: asyncio.Semaphore,
 ) -> None:
     """Run *handle_job* behind the concurrency semaphore."""
@@ -223,10 +223,11 @@ async def start_daemon(config: Config, wallet: LocalAccount) -> None:
 
     _setup_logging(config)
 
+    wallet_key = "0x" + wallet.key.hex()
     w3 = Web3(Web3.HTTPProvider(config.fhenix_rpc))
     icl = ICLClient(config.icl_endpoint, wallet)
     ipfs = IPFSClient(config.ipfs_gateway)
-    cofhe = MockCoFHEClient()
+    cofhe = get_cofhe_client(config, wallet_key)
     concurrent_jobs = asyncio.Semaphore(2)
 
     logger.info("Daemon starting …")

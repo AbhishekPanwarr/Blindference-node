@@ -2,50 +2,328 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import logging
 import os
+import subprocess
+import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import aiohttp
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.hashes import SHA256
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from eth_account import Account
+from eth_account.messages import encode_typed_data
 
 if TYPE_CHECKING:
-    pass
+    from blindference_node.config import Config
+
+logger = logging.getLogger("blindference-node")
 
 
 # ---------------------------------------------------------------------------
-# CoFHE abstraction (mock for Phase 4, real SDK later)
+# Exceptions
+# ---------------------------------------------------------------------------
+
+
+class CoFHEAPIError(Exception):
+    """Raised when a CoFHE API call fails."""
+
+
+# ---------------------------------------------------------------------------
+# CoFHE abstraction
 # ---------------------------------------------------------------------------
 
 
 class CoFHEClient(ABC):
-    """Abstract interface for Fhenix CoFHE interactions."""
+    """Abstract interface for Fhenix CoFHE interactions.
+
+    Handles are on‑chain ``uint256`` identifiers.  Plaintext values are
+    128‑bit unsigned integers (``uint128``).
+    """
 
     @abstractmethod
-    def decrypt(self, ciphertext_handle: str, permit: str) -> bytes:
-        """Decrypt a CoFHE ciphertext handle using a sharing permit."""
+    def decrypt(self, ct_handle: int) -> int:
+        """Decrypt *ct_handle* and return the ``uint128`` plaintext."""
 
     @abstractmethod
-    def encrypt_for(self, plaintext: bytes, acl_address: str) -> str:
-        """CoFHE-encrypt *plaintext* gated to *acl_address*."""
+    def encrypt(self, value: int) -> int:
+        """CoFHE‑encrypt *value* and return the ``uint256`` handle."""
 
 
 class MockCoFHEClient(CoFHEClient):
-    """Mock CoFHE client — returns fixed keys for testing.
-
-    In production this is replaced with the real ``@cofhe/sdk`` binding.
-    """
+    """Mock CoFHE client — returns a fixed key as an integer."""
 
     def __init__(self, fixed_key: bytes | None = None) -> None:
         self._key = fixed_key or os.urandom(32)
-        self._handles: list[str] = []
+        self._counter = 0
 
-    def decrypt(self, ciphertext_handle: str, permit: str) -> bytes:
-        return self._key
+    def decrypt(self, ct_handle: int) -> int:
+        return int.from_bytes(self._key[:16], "big")
 
-    def encrypt_for(self, plaintext: bytes, acl_address: str) -> str:
-        handle = "0x" + os.urandom(32).hex()
-        self._handles.append(handle)
-        return handle
+    def encrypt(self, value: int) -> int:
+        self._counter += 1
+        return 0xDEAD0000 + self._counter
+
+
+# ---------------------------------------------------------------------------
+# CoFHE factory
+# ---------------------------------------------------------------------------
+
+
+def get_cofhe_client(config: Config, wallet_private_key: str) -> CoFHEClient:
+    """Return the CoFHE client selected by ``config.cofhe_mode``.
+
+    ``"mock"``   → ``MockCoFHEClient`` (fixed key, no network).
+    ``"python"`` → ``CoFHERealClient`` (HTTP to Fhenix API).
+    ``"bridge"`` → ``CoFHEBridgeClient`` (Node.js subprocess).
+    """
+    mode = config.cofhe_mode.lower()
+    if mode == "mock":
+        return MockCoFHEClient()
+    if mode == "python":
+        return CoFHERealClient(
+            wallet_private_key=wallet_private_key,
+            endpoint=config.cofhe_endpoint,
+            chain_id=config.cofhe_chain_id,
+        )
+    if mode == "bridge":
+        return CoFHEBridgeClient(wallet_private_key=wallet_private_key)
+    logger.warning("Unknown cofhe_mode=%r — falling back to mock", config.cofhe_mode)
+    return MockCoFHEClient()
+
+
+# ---------------------------------------------------------------------------
+# CoFHERealClient (Python HTTP)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _SealingPermit:
+    issuer: str
+    expiration: int
+    sealing_public_hex: str
+    signature: str
+    sealing_private_key: object  # X25519PrivateKey — never serialised
+
+
+class CoFHERealClient(CoFHEClient):
+    """Real CoFHE client — talks to the Fhenix CoFHE HTTP API.
+
+    Creates an EIP‑712 self‑permit with an X25519 sealing keypair,
+    sends it to the CoFHE endpoint for decryption, and unseals the
+    returned value via ECIES (X25519 + HKDF + AES‑GCM).
+
+    Args:
+        wallet_private_key: Hex private key of the node wallet.
+        endpoint: Base URL of the CoFHE API.
+        chain_id: EVM chain ID (e.g. 421614 for Arbitrum Sepolia).
+    """
+
+    def __init__(
+        self,
+        wallet_private_key: str,
+        endpoint: str,
+        chain_id: int = 421614,
+    ) -> None:
+        raw = wallet_private_key
+        if raw.startswith("0x") or raw.startswith("0X"):
+            raw = raw[2:]
+        self._wallet = Account.from_key(raw)
+        self._endpoint = endpoint.rstrip("/")
+        self._chain_id = chain_id
+        self._permit: _SealingPermit | None = None
+
+    # ---- permit -----------------------------------------------------------
+
+    def _ensure_permit(self) -> _SealingPermit:
+        now = int(time.time())
+        if self._permit is not None and self._permit.expiration > now + 3600:
+            return self._permit
+
+        sk = X25519PrivateKey.generate()
+        pk_bytes = sk.public_key().public_bytes_raw()
+        expiration = now + 7 * 24 * 3600
+
+        typed_data = {
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name", "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                    {"name": "verifyingContract", "type": "address"},
+                ],
+                "Permit": [
+                    {"name": "issuer", "type": "address"},
+                    {"name": "expiration", "type": "uint256"},
+                    {"name": "sealingKey", "type": "bytes32"},
+                ],
+            },
+            "primaryType": "Permit",
+            "domain": {
+                "name": "CoFHE",
+                "version": "1",
+                "chainId": self._chain_id,
+                "verifyingContract": "0x0000000000000000000000000000000000000000",
+            },
+            "message": {
+                "issuer": self._wallet.address,
+                "expiration": expiration,
+                "sealingKey": "0x" + pk_bytes.hex(),
+            },
+        }
+        structured = encode_typed_data(full_message=typed_data)
+        signed = self._wallet.sign_message(structured)
+
+        self._permit = _SealingPermit(
+            issuer=self._wallet.address,
+            expiration=expiration,
+            sealing_public_hex="0x" + pk_bytes.hex(),
+            signature="0x" + signed.signature.hex(),
+            sealing_private_key=sk,
+        )
+        logger.debug("Permit renewed (expires in %ds)", expiration - now)
+        return self._permit
+
+    # ---- API calls --------------------------------------------------------
+
+    def decrypt(self, ct_handle: int) -> int:
+        permit = self._ensure_permit()
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "cofhe_decryptForView",
+            "params": [
+                hex(ct_handle),
+                {
+                    "issuer": permit.issuer,
+                    "expiration": permit.expiration,
+                    "sealingKey": permit.sealing_public_hex,
+                    "signature": permit.signature,
+                },
+            ],
+            "id": 1,
+        }
+        return _sync_call(self._endpoint, payload, permit.sealing_private_key)
+
+    def encrypt(self, value: int) -> int:
+        payload = {
+            "jsonrpc": "2.0",
+            "method": "cofhe_encrypt",
+            "params": [
+                hex(value),
+                "uint128",
+                self._wallet.address,
+            ],
+            "id": 1,
+        }
+        return _sync_encrypt(self._endpoint, payload)
+
+
+def _sync_call(endpoint: str, payload: dict, sealing_private_key: object) -> int:
+    """Synchronous HTTP call to the CoFHE API (called via ``asyncio.to_thread``)."""
+    import requests as _requests
+
+    try:
+        resp = _requests.post(
+            endpoint,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+    except _requests.RequestException as exc:
+        raise CoFHEAPIError(f"CoFHE decrypt request failed: {exc}") from exc
+
+    if "error" in result:
+        raise CoFHEAPIError(f"CoFHE decrypt error: {result['error']}")
+
+    sealed_hex = result.get("result", {}).get("sealedValue", "")
+    if not sealed_hex:
+        raise CoFHEAPIError("CoFHE response missing sealedValue")
+
+    sealed_bytes = bytes.fromhex(sealed_hex.replace("0x", ""))
+    return _unseal(sealed_bytes, sealing_private_key)
+
+
+def _sync_encrypt(endpoint: str, payload: dict) -> int:
+    import requests as _requests
+
+    try:
+        resp = _requests.post(
+            endpoint, json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+    except _requests.RequestException as exc:
+        raise CoFHEAPIError(f"CoFHE encrypt request failed: {exc}") from exc
+
+    if "error" in result:
+        raise CoFHEAPIError(f"CoFHE encrypt error: {result['error']}")
+
+    handle_hex = result.get("result", {}).get("handle", "")
+    if not handle_hex:
+        raise CoFHEAPIError("CoFHE response missing handle")
+
+    return int(handle_hex, 16)
+
+
+def _unseal(sealed_bytes: bytes, sealing_private_key: object) -> int:
+    """ECIES unseal: X25519 → HKDF → AES‑GCM decrypt."""
+    if len(sealed_bytes) < 65:
+        raise CoFHEAPIError(f"Sealed value too short: {len(sealed_bytes)} bytes")
+
+    eph_pub = X25519PublicKey.from_public_bytes(sealed_bytes[:32])
+    iv = sealed_bytes[32:44]
+    ciphertext = sealed_bytes[44:]
+
+    shared = sealing_private_key.exchange(eph_pub)
+    hkdf = HKDF(algorithm=SHA256(), length=32, salt=None, info=b"CoFHE seal")
+    aes_key = hkdf.derive(shared)
+
+    aesgcm = AESGCM(aes_key)
+    plaintext = aesgcm.decrypt(iv, ciphertext, None)
+    return int.from_bytes(plaintext, "big")
+
+
+# ---------------------------------------------------------------------------
+# CoFHEBridgeClient (TypeScript fallback)
+# ---------------------------------------------------------------------------
+
+
+class CoFHEBridgeClient(CoFHEClient):
+    """CoFHE client that spawns a Node.js TypeScript bridge.
+
+    Relies on ``@cofhe/sdk`` being installed via ``package.json`` and
+    the helper scripts ``scripts/cofhe_decrypt.ts`` / ``cofhe_encrypt.ts``.
+    """
+
+    def __init__(self, wallet_private_key: str) -> None:
+        self._pk = wallet_private_key
+        self._scripts_dir = os.path.join(os.path.dirname(__file__), "..", "scripts")
+
+    def _run_bridge(self, script: str, *args: str) -> int:
+        cmd = ["npx", "ts-node", os.path.join(self._scripts_dir, script), *args]
+        env = {**os.environ, "BLF_PRIVATE_KEY": self._pk}
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=30, env=env,
+        )
+        if result.returncode != 0:
+            raise CoFHEAPIError(f"Bridge {script} failed: {result.stderr.strip()}")
+        return int(result.stdout.strip(), 0)
+
+    def decrypt(self, ct_handle: int) -> int:
+        return self._run_bridge("cofhe_decrypt.ts", hex(ct_handle))
+
+    def encrypt(self, value: int) -> int:
+        return self._run_bridge("cofhe_encrypt.ts", hex(value))
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +340,7 @@ def encrypt_output_blob(text: str, key: bytes) -> bytes:
     """Encrypt *text* with AES-256-GCM.
 
     Returns:
-        ``iv (16) || ciphertext || tag (16)``
+        ``iv (12) || ciphertext + tag (16)``
     """
     aes = AESGCM(key)
     iv = os.urandom(12)
@@ -71,7 +349,7 @@ def encrypt_output_blob(text: str, key: bytes) -> bytes:
 
 
 def decrypt_prompt_blob(blob: bytes, key: bytes) -> str:
-    """Decrypt an AES-256-GCM blob produced by the client SDK.
+    """Decrypt an AES-256-GCM blob.
 
     Blob format: ``iv (12) || ciphertext || tag (16)``.
     """
@@ -83,43 +361,23 @@ def decrypt_prompt_blob(blob: bytes, key: bytes) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Key splitting & CoFHE key storage helpers
+# Key reconstruction helpers
 # ---------------------------------------------------------------------------
 
 
-def retrieve_prompt_key(
-    cofhe: CoFHEClient, job_id: str, permit: str
-) -> bytes:
-    """Retrieve the AES prompt key from ``PromptKeyStore`` via CoFHE.
-
-    In mock mode returns the CoFHE client's fixed key.  In production this
-    calls ``PromptKeyStore.decryptForView()`` for both key halves and
-    reconstructs ``Kp = KpH || KpL``.
-    """
-    # Production path (future):
-    #   kp_high = cofhe.decrypt(f"PromptKeyStore.KpH.{job_id}", permit)
-    #   kp_low  = cofhe.decrypt(f"PromptKeyStore.KpL.{job_id}", permit)
-    #   return kp_high + kp_low
-    return cofhe.decrypt(f"PromptKeyStore.{job_id}", permit)
+def reconstruct_key(high_uint128: int, low_uint128: int) -> bytes:
+    """Reconstruct a 32‑byte AES key from two ``uint128`` halves."""
+    return high_uint128.to_bytes(16, "big") + low_uint128.to_bytes(16, "big")
 
 
-def store_output_key_for_user(
-    cofhe: CoFHEClient,
-    job_id: str,
-    ko: bytes,
-    user_address: str,
-) -> str:
-    """Split *ko*, CoFHE-encrypt halves for *user_address*, store on-chain.
+def split_key_for_cofhe(key: bytes) -> tuple[int, int]:
+    """Split a 32‑byte AES key into two ``uint128`` integers."""
+    return (
+        int.from_bytes(key[:16], "big"),
+        int.from_bytes(key[16:], "big"),
+    )
 
-    Returns:
-        A comma-separated string of the two CoFHE handles (``h_high,h_low``).
-    """
-    ko_high = ko[:16]
-    ko_low = ko[16:]
 
-    handle_high = cofhe.encrypt_for(ko_high, user_address)
-    handle_low = cofhe.encrypt_for(ko_low, user_address)
-
-    # Production path (future):
-    #   call PromptKeyStore.storeOutputKey(job_id, handle_high, handle_low)
-    return f"{handle_high},{handle_low}"
+def format_output_key_handle(high_handle: int, low_handle: int) -> str:
+    """Format two CoFHE handles as a single hex string for ICL submission."""
+    return "0x" + high_handle.to_bytes(32, "big").hex() + low_handle.to_bytes(32, "big").hex()
