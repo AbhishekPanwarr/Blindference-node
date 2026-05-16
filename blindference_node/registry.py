@@ -24,7 +24,7 @@ _CONTRACTS = {
     "fhenix_testnet": {
         "NodeAttestationRegistry": "0xB54e019e9717a8Ed4746bA9d7F1A3F83cf0a35E0",
         "NodeOperatorRegistry": "0x0000000000000000000000000000000000000000",
-        "PromptKeyStore": "0xFe47F3963C506C44eC659f3c904ef74Ab40456C5",
+        "PromptKeyStore": "0x1E22dD12f448B15f1Ca8560fB6B4463834FaAf73",
         "ExecutionCommitmentRegistry": "0xcd45aefE9a16772528fa30B7d47958a95e83440C",
     },
 }

@@ -1,9 +1,1 @@
-{
-  "fhenix_testnet": {
-    "PromptKeyStore": "0xFe47F3963C506C44eC659f3c904ef74Ab40456C5",
-    "ResultRegistry": "0xCb8Bd21e08329FA15E95383eA5A2f2C191013c4e",
-    "InferenceGate": "0x04F3181524BFa8945aD5B6dD2A20600fb2ED76D8",
-    "ExecutionCommitmentRegistry": "0xcd45aefE9a16772528fa30B7d47958a95e83440C",
-    "NodeAttestationRegistry": "0xB54e019e9717a8Ed4746bA9d7F1A3F83cf0a35E0"
-  }
-}
+
