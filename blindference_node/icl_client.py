@@ -215,6 +215,20 @@ class ICLClient:
         return await self._request("POST", "/internal/task/verify", body)
 
     # ------------------------------------------------------------------
+    # Phase 3 — job status (for verifier CID polling)
+    # ------------------------------------------------------------------
+
+    async def get_job_status(self, job_id: str) -> dict[str, Any]:
+        """Fetch the current status of a job.
+
+        ``GET /internal/jobs/{jobId}/status``
+
+        Returns:
+            ``{"jobId": …, "status": …, "outputCid": …, "leaderCommitment": …}``
+        """
+        return await self._request("GET", f"/internal/jobs/{job_id}/status")
+
+    # ------------------------------------------------------------------
     # Remaining stubs
     # ------------------------------------------------------------------
 

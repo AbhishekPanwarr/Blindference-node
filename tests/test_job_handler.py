@@ -122,13 +122,13 @@ async def test_handle_job_verifier_full_flow(
     ipfs = IPFSClient(config.ipfs_gateway)
 
     with patch.object(ICLClient, "claim_task", AsyncMock(return_value={})), \
+         patch.object(ICLClient, "get_job_status", AsyncMock(return_value={"outputCid": "QmOutputABC"})), \
          patch.object(ICLClient, "submit_verification", AsyncMock(return_value={})) as mock_verify:
 
         from blindference_node.crypto import encrypt_output_blob
         test_blob = encrypt_output_blob("Test prompt", b"\x01" * 32)
 
-        with patch.object(IPFSClient, "download", AsyncMock(return_value=test_blob)), \
-             patch.object(IPFSClient, "upload", AsyncMock(return_value="QmOutputABC")):
+        with patch.object(IPFSClient, "download", AsyncMock(return_value=test_blob)):
 
             await handle_job(
                 assignment_verifier, config, wallet, w3, icl, ipfs, cofhe
@@ -219,3 +219,82 @@ async def test_handle_job_leader_zero_user_address(
 
             await handle_job(assignment, config, wallet, w3, icl, ipfs, cofhe)
             mock_submit.assert_called_once()
+
+
+# ==================================================================
+# Verifier flow (Phase 3)
+# ==================================================================
+
+
+@pytest.mark.asyncio
+async def test_handle_job_verifier_polls_leader_cid(
+    config, wallet, w3, cofhe, assignment_verifier
+):
+    """Verifier polls get_job_status for leader CID and submits verification."""
+    icl = ICLClient(config.icl_endpoint, wallet)
+    ipfs = IPFSClient(config.ipfs_gateway)
+
+    leader_cid = "QmLeaderOutput"
+
+    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={})),          patch.object(ICLClient, "get_job_status", AsyncMock(return_value={"outputCid": leader_cid})),          patch.object(ICLClient, "submit_verification", AsyncMock(return_value={})) as mock_verify:
+
+        from blindference_node.crypto import encrypt_output_blob
+        test_blob = encrypt_output_blob("Test prompt", b"\x01" * 32)
+
+        with patch.object(IPFSClient, "download", AsyncMock(return_value=test_blob)):
+            await handle_job(
+                assignment_verifier, config, wallet, w3, icl, ipfs, cofhe
+            )
+
+        mock_verify.assert_called_once()
+        call_args = mock_verify.call_args
+        assert call_args[0][0] == "0xjob-verifier"
+        assert call_args[0][2] == "CONFIRM"
+        assert len(call_args[0][1]) == 32  # commitment
+
+
+@pytest.mark.asyncio
+async def test_leader_verifier_commitment_match(config, wallet, w3, cofhe):
+    """Leader and verifier produce the same commitment for identical prompt + model."""
+    icl_leader = ICLClient(config.icl_endpoint + "/leader", wallet)
+    icl_verifier = ICLClient(config.icl_endpoint + "/verifier", wallet)
+    ipfs = IPFSClient(config.ipfs_gateway)
+
+    test_prompt = "What is the speed of light?"
+    test_blob = __import__("blindference_node.crypto", fromlist=["encrypt_output_blob"]).encrypt_output_blob(test_prompt, b"\x01" * 32)
+
+    leader_c = None
+    verifier_c = None
+
+    leader_assignment = {
+        "jobId": "0xmatch-leader",
+        "role": "leader",
+        "modelId": "qwen2.5-7b",
+        "promptCid": "QmMatchPrompt",
+        "deadline": 9999999999,
+        "insuranceOptIn": False,
+    }
+    verifier_assignment = {
+        "jobId": "0xmatch-verifier",
+        "role": "verifier",
+        "modelId": "qwen2.5-7b",
+        "promptCid": "QmMatchPrompt",
+        "deadline": 9999999999,
+        "insuranceOptIn": False,
+    }
+
+    # Leader flow
+    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={})),          patch.object(ICLClient, "submit_result", AsyncMock()) as mock_submit:
+        with patch.object(IPFSClient, "download", AsyncMock(return_value=test_blob)),              patch.object(IPFSClient, "upload", AsyncMock(return_value="QmMatchOutput")):
+            await handle_job(leader_assignment, config, wallet, w3, icl_leader, ipfs, cofhe)
+            leader_c = mock_submit.call_args[0][2]
+
+    # Verifier flow — use leader"s CID
+    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={})),          patch.object(ICLClient, "get_job_status", AsyncMock(return_value={"outputCid": "QmMatchOutput"})),          patch.object(ICLClient, "submit_verification", AsyncMock()) as mock_verify:
+        with patch.object(IPFSClient, "download", AsyncMock(return_value=test_blob)):
+            await handle_job(verifier_assignment, config, wallet, w3, icl_verifier, ipfs, cofhe)
+            verifier_c = mock_verify.call_args[0][1]
+
+    assert leader_c is not None
+    assert verifier_c is not None
+    assert leader_c == verifier_c, f"Commitments differ: leader={leader_c.hex()}, verifier={verifier_c.hex()}"

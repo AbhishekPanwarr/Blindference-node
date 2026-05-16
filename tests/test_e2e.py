@@ -77,6 +77,14 @@ def _create_mock_icl_app() -> web.Application:
         return web.json_response({"status": "recorded"})
 
     # Attach received state to app for inspection
+    async def job_status_handler(request: web.Request) -> web.Response:
+        return web.json_response(
+            {"jobId": request.match_info["job_id"],
+             "status": "running",
+             "outputCid": "QmE2EMockLeaderCID",
+             "leaderCommitment": None}
+        )
+
     app["received"] = _received
 
     app.router.add_get(
@@ -91,6 +99,7 @@ def _create_mock_icl_app() -> web.Application:
     app.router.add_post("/internal/task/claim", claim_handler)
     app.router.add_post("/internal/task/result", result_handler)
     app.router.add_post("/internal/task/verify", verify_handler)
+    app.router.add_get("/internal/jobs/{job_id}/status", job_status_handler)
 
     return app
 

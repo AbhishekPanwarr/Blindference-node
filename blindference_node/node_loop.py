@@ -186,6 +186,9 @@ async def _job_wrapper(
     sem: asyncio.Semaphore,
 ) -> None:
     """Run *handle_job* behind the concurrency semaphore."""
+    role = job.get("role", "leader")
+    job_id = job.get("jobId", "?")
+    logger.info("Spawning %s job %s", role, job_id)
     async with sem:
         await handle_job(job, config, wallet, w3, icl, ipfs, cofhe)
 
