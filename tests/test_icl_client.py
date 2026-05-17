@@ -130,12 +130,6 @@ async def test_connection_error_retries_then_raises(wallet, icl_client):
     assert mock_req.call_count == 2  # 1 initial + 1 retry
 
 
-def test_stub_methods_raise_not_implemented(icl_client):
-    with pytest.raises(NotImplementedError):
-        import asyncio
-        asyncio.run(icl_client.send_heartbeat())
-
-
 @pytest.mark.asyncio
 async def test_get_assignments_empty(wallet, icl_client):
     """get_assignments returns empty list when no jobs are pending."""

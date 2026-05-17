@@ -229,8 +229,18 @@ class ICLClient:
         return await self._request("GET", f"/internal/jobs/{job_id}/status")
 
     # ------------------------------------------------------------------
-    # Remaining stubs
+    # Phase 6 — heartbeat
     # ------------------------------------------------------------------
 
     async def send_heartbeat(self) -> dict[str, Any]:
-        raise NotImplementedError("send_heartbeat — Phase 5")
+        """Send a liveness heartbeat to the ICL.
+
+        ``POST /internal/heartbeat``
+
+        The ICL refreshes the node's ``last_heartbeat`` timestamp so it
+        stays eligible for job assignments.
+        """
+        return await self._request("POST", "/internal/heartbeat", {
+            "nodeAddress": self.address,
+            "timestamp": str(int(time.time())),
+        })

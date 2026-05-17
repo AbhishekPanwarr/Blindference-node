@@ -22,6 +22,40 @@ from blindference_node.wallet import generate_wallet, import_wallet, load_wallet
 # Tier / model mapping
 # ---------------------------------------------------------------------------
 
+
+# ---------------------------------------------------------------------------
+# .env file loader — runs before any command
+# ---------------------------------------------------------------------------
+
+
+def _load_env_file() -> None:
+    """Load environment variables from .env files if present."""
+    import os as _os
+
+    paths = [
+        _os.path.join(_os.getcwd(), ".env"),
+        _os.path.expanduser("~/.blindference/.env"),
+    ]
+    for env_path in paths:
+        if not _os.path.isfile(env_path):
+            continue
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, sep, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                if key and key not in _os.environ:
+                    _os.environ[key] = value
+
+
+_load_env_file()
+
+
 MIN_VRAM_GB = 0.5  # 512 MB
 
 TIER_SPECS = [
@@ -178,7 +212,7 @@ def init(non_interactive: bool) -> None:
 
     challenge_id = challenge.get("challengeId", "")
     nonce_hex = challenge.get("nonce", "")
-    nonce_bytes = bytes.fromhex(nonce_hex) if nonce_hex else b""
+    nonce_bytes = bytes.fromhex(nonce_hex.replace("0x", "").replace("0X", "")) if nonce_hex else b""
     click.echo(f"  Challenge ID : {challenge_id}")
 
     quote = backend.get_quote(nonce_bytes)

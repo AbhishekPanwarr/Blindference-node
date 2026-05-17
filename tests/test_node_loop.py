@@ -10,6 +10,7 @@ from aiohttp import web
 from web3 import Web3
 
 from blindference_node.crypto import MockCoFHEClient
+from blindference_node.icl_client import ICLClient
 from blindference_node.ipfs_client import IPFSClient
 
 from blindference_node.config import Config
@@ -60,8 +61,10 @@ async def test_heartbeat_loop_runs_and_stops():
 
     shutdown = asyncio.Event()
 
-    with patch("blindference_node.node_loop.update_heartbeat") as mock_hb:
-        task = asyncio.create_task(heartbeat_loop(shutdown, config, w3, wallet))
+    icl = ICLClient(config.icl_endpoint, wallet)
+    with patch("blindference_node.node_loop.update_heartbeat") as mock_hb, \
+         patch.object(ICLClient, "send_heartbeat", AsyncMock(return_value={})):
+        task = asyncio.create_task(heartbeat_loop(shutdown, config, w3, wallet, icl))
 
         # Let it fire once
         await asyncio.sleep(0.1)
@@ -80,11 +83,12 @@ async def test_heartbeat_loop_handles_errors():
 
     shutdown = asyncio.Event()
 
+    icl = ICLClient(config.icl_endpoint, wallet)
     with patch(
         "blindference_node.node_loop.update_heartbeat",
         side_effect=RuntimeError("RPC down"),
-    ):
-        task = asyncio.create_task(heartbeat_loop(shutdown, config, w3, wallet))
+    ), patch.object(ICLClient, "send_heartbeat", AsyncMock(return_value={})):
+        task = asyncio.create_task(heartbeat_loop(shutdown, config, w3, wallet, icl))
         await asyncio.sleep(0.1)
         shutdown.set()
         await task  # Should not raise

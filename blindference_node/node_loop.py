@@ -71,13 +71,19 @@ async def heartbeat_loop(
     config: Config,
     w3: Web3,
     wallet: LocalAccount,
+    icl: ICLClient,
 ) -> None:
-    """Send an on‑chain heartbeat every 60 seconds."""
+    """Send a heartbeat every 60 seconds (on‑chain + ICL)."""
     while not shutdown.is_set():
         try:
             await asyncio.to_thread(update_heartbeat, w3, config, wallet)
         except Exception as exc:
-            logger.warning("Heartbeat failed: %s", exc)
+            logger.warning("On‑chain heartbeat failed: %s", exc)
+        try:
+            await icl.send_heartbeat()
+            logger.debug("ICL heartbeat sent")
+        except Exception as exc:
+            logger.warning("ICL heartbeat failed: %s", exc)
         if await _sleep_or_shutdown(shutdown, 60):
             return
 
@@ -103,7 +109,8 @@ async def attestation_watchdog(
             logger.info("Cert expires in %ds — re‑attesting …", remaining)
             try:
                 challenge = await icl.get_challenge()
-                nonce = bytes.fromhex(challenge.get("nonce", ""))
+                nonce_h = challenge.get("nonce", "")
+                nonce = bytes.fromhex(nonce_h.replace("0x", "").replace("0X", "")) if nonce_h else b""
                 quote = backend.get_quote(nonce)
                 result = await icl.submit_attestation(
                     backend.backend_type(),
@@ -154,6 +161,7 @@ async def assignment_poller(
     Each assignment spawns a ``handle_job`` task, limited to at most
     ``concurrent_jobs`` running at once.
     """
+    last_idle_log = 0
     while not shutdown.is_set():
         try:
             assignments = await icl.get_assignments()
@@ -168,7 +176,10 @@ async def assignment_poller(
                         )
                     )
             else:
-                logger.debug("No pending assignments")
+                now_ts = time.monotonic()
+                if now_ts - last_idle_log >= 60:
+                    logger.info("No assignments for last 60s")
+                    last_idle_log = now_ts
         except Exception as exc:
             logger.warning("Assignment poll failed: %s", exc)
         if await _sleep_or_shutdown(shutdown, 5):
@@ -253,7 +264,7 @@ async def start_daemon(config: Config, wallet: LocalAccount) -> None:
             pass
 
     tasks = [
-        asyncio.create_task(heartbeat_loop(shutdown, config, w3, wallet)),
+        asyncio.create_task(heartbeat_loop(shutdown, config, w3, wallet, icl)),
         asyncio.create_task(attestation_watchdog(shutdown, config, icl, wallet, w3)),
         asyncio.create_task(
             assignment_poller(

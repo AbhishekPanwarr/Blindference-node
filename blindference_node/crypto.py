@@ -93,7 +93,7 @@ def get_cofhe_client(config: Config, wallet_private_key: str) -> CoFHEClient:
             chain_id=config.cofhe_chain_id,
         )
     if mode == "bridge":
-        return CoFHEBridgeClient(wallet_private_key=wallet_private_key)
+        return CoFHEBridgeClient(wallet_private_key=wallet_private_key, rpc_url=config.cofhe_endpoint)
     logger.warning("Unknown cofhe_mode=%r — falling back to mock", config.cofhe_mode)
     return MockCoFHEClient()
 
@@ -301,16 +301,18 @@ def _unseal(sealed_bytes: bytes, sealing_private_key: object) -> int:
 class CoFHEBridgeClient(CoFHEClient):
     """CoFHE client that spawns a Node.js TypeScript bridge.
 
-    Relies on ``@cofhe/sdk`` being installed via ``package.json`` and
-    the helper scripts ``scripts/cofhe_decrypt.ts`` / ``cofhe_encrypt.ts``.
+    Uses ``@cofhe/sdk/node`` + viem to call the Fhenix CoFHE coprocessor
+    through the Arbitrum Sepolia RPC.  The *rpc_url* must point to an
+    Arbitrum Sepolia RPC endpoint (e.g. Alchemy / Infura).
     """
 
-    def __init__(self, wallet_private_key: str) -> None:
+    def __init__(self, wallet_private_key: str, rpc_url: str) -> None:
         self._pk = wallet_private_key
+        self._rpc_url = rpc_url
         self._scripts_dir = os.path.join(os.path.dirname(__file__), "..", "scripts")
 
     def _run_bridge(self, script: str, *args: str) -> int:
-        cmd = ["npx", "ts-node", os.path.join(self._scripts_dir, script), *args]
+        cmd = ["npx", "ts-node", os.path.join(self._scripts_dir, script), *args, self._rpc_url]
         env = {**os.environ, "BLF_PRIVATE_KEY": self._pk}
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=30, env=env,
