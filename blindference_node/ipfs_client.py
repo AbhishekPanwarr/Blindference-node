@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import aiohttp
 
@@ -18,19 +19,30 @@ class IPFSClient:
         self._gateway = gateway_url.rstrip("/")
 
     async def upload(self, data: bytes) -> str:
-        """Upload *data* to IPFS via a `PUT`-style gateway endpoint.
+        """Upload *data* to IPFS via Pinata pinning service.
 
-        Returns:
-            The IPFS CID string.
-
-        Raises:
-            RuntimeError: if the upload fails.
+        Returns a real IPFS CID when ``BLF_IPFS_UPLOAD_JWT`` is set.
+        Falls back to a mock CID for local testing.
         """
-        # Lighthouse storage doesn't have a simple public upload API; for now
-        # we implement a mock-like placeholder.  Real upload uses the
-        # lighthouse-web3 SDK or the Pinata API.
-        import hashlib
-        return "Qm" + hashlib.sha256(data).hexdigest()[:44]
+        jwt = os.environ.get("BLF_IPFS_UPLOAD_JWT")
+        if not jwt:
+            import hashlib
+            return "Qm" + hashlib.sha256(data).hexdigest()[:44]
+
+        async with aiohttp.ClientSession() as session:
+            form = aiohttp.FormData()
+            form.add_field("file", data, filename="blindference-output.bin")
+            async with session.post(
+                "https://uploads.pinata.cloud/v3/files",
+                headers={"Authorization": f"Bearer {jwt}"},
+                data=form,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status >= 400:
+                    text = await resp.text()
+                    raise RuntimeError(f"Pinata upload failed ({resp.status}): {text}")
+                result = await resp.json()
+                return str(result["data"]["cid"])
 
     async def download(self, cid: str) -> bytes:
         """Download a blob from IPFS by CID.

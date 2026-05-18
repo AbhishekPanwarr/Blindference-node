@@ -84,19 +84,18 @@ async def _common_steps(
     # 2 — Retrieve & reconstruct prompt key
     kp_high_handle = claim.get("kpHighHandle", 0)
     kp_low_handle = claim.get("kpLowHandle", 0)
-    if kp_high_handle and kp_low_handle:
-        try:
-            high_val = cofhe.decrypt(kp_high_handle)
-            low_val = cofhe.decrypt(kp_low_handle)
-            kp = reconstruct_key(high_val, low_val)
-            logger.info("Job %s: prompt key reconstructed (CoFHE)", job_id)
-        except Exception as exc:
-            logger.error("Job %s: CoFHE decrypt failed: %s", job_id, exc)
-            return None
-    else:
-        mock_val = cofhe.decrypt(0)
-        kp = mock_val.to_bytes(16, "big") * 2
-        logger.info("Job %s: prompt key from mock", job_id)
+    if not kp_high_handle or not kp_low_handle:
+        logger.error("Job %s: missing CoFHE key handles — cannot decrypt prompt", job_id)
+        return None
+
+    try:
+        high_val = cofhe.decrypt(kp_high_handle)
+        low_val = cofhe.decrypt(kp_low_handle)
+        kp = reconstruct_key(high_val, low_val)
+        logger.info("Job %s: prompt key reconstructed (CoFHE)", job_id)
+    except Exception as exc:
+        logger.error("Job %s: CoFHE decrypt failed: %s", job_id, exc)
+        return None
 
     # 3 — Download encrypted prompt
     blob = await ipfs.download(prompt_cid)

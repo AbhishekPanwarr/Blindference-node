@@ -7,8 +7,23 @@ import pytest
 from eth_account import Account
 
 from blindference_node.config import Config
-from blindference_node.crypto import MockCoFHEClient
+from blindference_node.crypto import CoFHEClient
 from blindference_node.icl_client import ICLClient
+
+
+class _TestCoFHEClient(CoFHEClient):
+    """Minimal test double for CoFHE interface."""
+
+    def __init__(self, fixed_key: bytes | None = None) -> None:
+        self._key = fixed_key or b"\x01" * 32
+        self._counter = 0
+
+    def decrypt(self, ct_handle: int) -> int:
+        return int.from_bytes(self._key[:16], "big")
+
+    def encrypt(self, value: int) -> int:
+        self._counter += 1
+        return 0xDEAD0000 + self._counter
 from blindference_node.ipfs_client import IPFSClient
 from blindference_node.job_handler import handle_job
 
@@ -43,7 +58,7 @@ def w3():
 
 @pytest.fixture
 def cofhe():
-    return MockCoFHEClient(fixed_key=b"\x01" * 32)
+    return _TestCoFHEClient(fixed_key=b"\x01" * 32)
 
 
 @pytest.fixture
@@ -56,6 +71,8 @@ def assignment_leader():
         "deadline": 9999999999,
         "insuranceOptIn": False,
         "userAddress": "0xabC1230000000000000000000000000000000001",
+        "kpHighHandle": 0xDEAD0001,
+        "kpLowHandle": 0xDEAD0002,
     }
 
 
@@ -68,6 +85,8 @@ def assignment_verifier():
         "promptCid": "QmPrompt456",
         "deadline": 9999999999,
         "insuranceOptIn": False,
+        "kpHighHandle": 0xDEAD0001,
+        "kpLowHandle": 0xDEAD0002,
     }
 
 
@@ -85,8 +104,8 @@ async def test_handle_job_leader_full_flow(
     ipfs = IPFSClient(config.ipfs_gateway)
 
     # Mock ICL endpoints
-    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={})), \
-         patch.object(ICLClient, "submit_result", AsyncMock(return_value={})) as mock_submit:
+    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={"kpHighHandle": 0xDEAD0001, "kpLowHandle": 0xDEAD0002})), \
+         patch.object(ICLClient, "submit_result", AsyncMock(return_value={"kpHighHandle": 0xDEAD0001, "kpLowHandle": 0xDEAD0002})) as mock_submit:
 
         # Mock IPFS download to return an encrypted prompt blob
         # Create a valid encrypted blob to avoid decryption failure
@@ -121,9 +140,9 @@ async def test_handle_job_verifier_full_flow(
     icl = ICLClient(config.icl_endpoint, wallet)
     ipfs = IPFSClient(config.ipfs_gateway)
 
-    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={})), \
+    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={"kpHighHandle": 0xDEAD0001, "kpLowHandle": 0xDEAD0002})), \
          patch.object(ICLClient, "get_job_status", AsyncMock(return_value={"outputCid": "QmOutputABC"})), \
-         patch.object(ICLClient, "submit_verification", AsyncMock(return_value={})) as mock_verify:
+         patch.object(ICLClient, "submit_verification", AsyncMock(return_value={"kpHighHandle": 0xDEAD0001, "kpLowHandle": 0xDEAD0002})) as mock_verify:
 
         from blindference_node.crypto import encrypt_output_blob
         test_blob = encrypt_output_blob("Test prompt", b"\x01" * 32)
@@ -155,7 +174,7 @@ async def test_handle_job_ipfs_download_failure(
     icl = ICLClient(config.icl_endpoint, wallet)
     ipfs = IPFSClient(config.ipfs_gateway)
 
-    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={})), \
+    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={"kpHighHandle": 0xDEAD0001, "kpLowHandle": 0xDEAD0002})), \
          patch.object(IPFSClient, "download", AsyncMock(side_effect=RuntimeError("IPFS down"))), \
          patch.object(ICLClient, "submit_result", AsyncMock()) as mock_submit:
 
@@ -176,19 +195,14 @@ async def test_handle_job_icl_claim_failure_continues(
     ipfs = IPFSClient(config.ipfs_gateway)
 
     with patch.object(ICLClient, "claim_task", AsyncMock(side_effect=RuntimeError("claim failed"))), \
-         patch.object(ICLClient, "submit_result", AsyncMock(return_value={})) as mock_submit:
+         patch.object(ICLClient, "submit_result", AsyncMock()) as mock_submit:
 
-        from blindference_node.crypto import encrypt_output_blob
-        test_blob = encrypt_output_blob("test", b"\x01" * 32)
-
-        with patch.object(IPFSClient, "download", AsyncMock(return_value=test_blob)), \
-             patch.object(IPFSClient, "upload", AsyncMock(return_value="QmOk")):
-
-            await handle_job(
-                assignment_leader, config, wallet, w3, icl, ipfs, cofhe
-            )
-            # Job should still complete — submit_result was called
-            mock_submit.assert_called_once()
+        result = await handle_job(
+            assignment_leader, config, wallet, w3, icl, ipfs, cofhe
+        )
+        # Without claim, key handles are missing — job aborts, submit_result not called
+        assert result is None
+        mock_submit.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -208,8 +222,8 @@ async def test_handle_job_leader_zero_user_address(
     icl = ICLClient(config.icl_endpoint, wallet)
     ipfs = IPFSClient(config.ipfs_gateway)
 
-    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={})), \
-         patch.object(ICLClient, "submit_result", AsyncMock(return_value={})) as mock_submit:
+    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={"kpHighHandle": 0xDEAD0001, "kpLowHandle": 0xDEAD0002})), \
+         patch.object(ICLClient, "submit_result", AsyncMock(return_value={"kpHighHandle": 0xDEAD0001, "kpLowHandle": 0xDEAD0002})) as mock_submit:
 
         from blindference_node.crypto import encrypt_output_blob
         test_blob = encrypt_output_blob("test", b"\x01" * 32)
@@ -236,7 +250,7 @@ async def test_handle_job_verifier_polls_leader_cid(
 
     leader_cid = "QmLeaderOutput"
 
-    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={})),          patch.object(ICLClient, "get_job_status", AsyncMock(return_value={"outputCid": leader_cid})),          patch.object(ICLClient, "submit_verification", AsyncMock(return_value={})) as mock_verify:
+    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={"kpHighHandle": 0xDEAD0001, "kpLowHandle": 0xDEAD0002})),          patch.object(ICLClient, "get_job_status", AsyncMock(return_value={"outputCid": leader_cid})),          patch.object(ICLClient, "submit_verification", AsyncMock(return_value={"kpHighHandle": 0xDEAD0001, "kpLowHandle": 0xDEAD0002})) as mock_verify:
 
         from blindference_node.crypto import encrypt_output_blob
         test_blob = encrypt_output_blob("Test prompt", b"\x01" * 32)
@@ -284,13 +298,13 @@ async def test_leader_verifier_commitment_match(config, wallet, w3, cofhe):
     }
 
     # Leader flow
-    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={})),          patch.object(ICLClient, "submit_result", AsyncMock()) as mock_submit:
+    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={"kpHighHandle": 0xDEAD0001, "kpLowHandle": 0xDEAD0002})),          patch.object(ICLClient, "submit_result", AsyncMock()) as mock_submit:
         with patch.object(IPFSClient, "download", AsyncMock(return_value=test_blob)),              patch.object(IPFSClient, "upload", AsyncMock(return_value="QmMatchOutput")):
             await handle_job(leader_assignment, config, wallet, w3, icl_leader, ipfs, cofhe)
             leader_c = mock_submit.call_args[0][2]
 
     # Verifier flow — use leader"s CID
-    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={})),          patch.object(ICLClient, "get_job_status", AsyncMock(return_value={"outputCid": "QmMatchOutput"})),          patch.object(ICLClient, "submit_verification", AsyncMock()) as mock_verify:
+    with patch.object(ICLClient, "claim_task", AsyncMock(return_value={"kpHighHandle": 0xDEAD0001, "kpLowHandle": 0xDEAD0002})),          patch.object(ICLClient, "get_job_status", AsyncMock(return_value={"outputCid": "QmMatchOutput"})),          patch.object(ICLClient, "submit_verification", AsyncMock()) as mock_verify:
         with patch.object(IPFSClient, "download", AsyncMock(return_value=test_blob)):
             await handle_job(verifier_assignment, config, wallet, w3, icl_verifier, ipfs, cofhe)
             verifier_c = mock_verify.call_args[0][1]

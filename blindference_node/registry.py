@@ -170,9 +170,12 @@ def _register_via_operator_registry(
 # Path 2 — NodeAttestationRegistry.commit()
 # ---------------------------------------------------------------------------
 
+# keccak256("blindference.node.availability.v1")
+# Must match the attestation type that get_active_nodes() passes to
+# NodeAttestationRegistry.hasValid().
 _DEFAULT_ATTESTATION_TYPE = bytes.fromhex(
-    "424c494e44464552454e43452d4e4f44452d4154544553544154494f4e"
-)  # "BLINDFERENCE-NODE-ATTESTATION" (28 bytes, padded to 32)
+    "ca0ac5323d72ba0e8e9c7657401f1b7e45a00f51fe8b62e62c975d72ed2b17a4"
+)
 
 
 def _register_via_attestation_commit(

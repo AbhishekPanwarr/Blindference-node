@@ -3,7 +3,7 @@
 import pytest
 
 from blindference_node.crypto import (
-    MockCoFHEClient,
+    CoFHEClient,
     decrypt_prompt_blob,
     encrypt_output_blob,
     format_output_key_handle,
@@ -11,6 +11,21 @@ from blindference_node.crypto import (
     reconstruct_key,
     split_key_for_cofhe,
 )
+
+
+class _TestCoFHEClient(CoFHEClient):
+    """Minimal test double for CoFHE interface."""
+
+    def __init__(self, fixed_key: bytes | None = None) -> None:
+        self._key = fixed_key or b"\x01" * 32
+        self._counter = 0
+
+    def decrypt(self, ct_handle: int) -> int:
+        return int.from_bytes(self._key[:16], "big")
+
+    def encrypt(self, value: int) -> int:
+        self._counter += 1
+        return 0xDEAD0000 + self._counter
 
 
 def test_generate_output_key_length():
@@ -35,15 +50,15 @@ def test_aes_wrong_key_fails():
         decrypt_prompt_blob(blob, key2)
 
 
-def test_mock_cofhe_decrypt_returns_int():
-    cofhe = MockCoFHEClient()
+def test_test_cofhe_decrypt_returns_int():
+    cofhe = _TestCoFHEClient()
     val = cofhe.decrypt(12345)
     assert isinstance(val, int)
     assert val == cofhe.decrypt(99999)
 
 
-def test_mock_cofhe_encrypt_returns_int():
-    cofhe = MockCoFHEClient()
+def test_test_cofhe_encrypt_returns_int():
+    cofhe = _TestCoFHEClient()
     h = cofhe.encrypt(42)
     assert isinstance(h, int)
 

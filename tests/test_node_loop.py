@@ -9,7 +9,7 @@ import pytest
 from aiohttp import web
 from web3 import Web3
 
-from blindference_node.crypto import MockCoFHEClient
+from blindference_node.crypto import CoFHEClient
 from blindference_node.icl_client import ICLClient
 from blindference_node.ipfs_client import IPFSClient
 
@@ -20,6 +20,21 @@ from blindference_node.node_loop import (
     attestation_watchdog,
     heartbeat_loop,
 )
+
+
+class _TestCoFHEClient(CoFHEClient):
+    """Minimal test double for CoFHE interface."""
+
+    def __init__(self, fixed_key: bytes | None = None) -> None:
+        self._key = fixed_key or b"\x01" * 32
+        self._counter = 0
+
+    def decrypt(self, ct_handle: int) -> int:
+        return int.from_bytes(self._key[:16], "big")
+
+    def encrypt(self, value: int) -> int:
+        self._counter += 1
+        return 0xDEAD0000 + self._counter
 
 
 def _wallet():
@@ -127,7 +142,7 @@ async def test_assignment_poller_receives_jobs():
 
     w3 = MagicMock(spec=Web3)
     ipfs = IPFSClient(config.ipfs_gateway)
-    cofhe = MockCoFHEClient()
+    cofhe = _TestCoFHEClient()
     sem = asyncio.Semaphore(2)
 
     shutdown = asyncio.Event()
@@ -148,7 +163,7 @@ async def test_assignment_poller_empty_list():
 
     w3 = MagicMock(spec=Web3)
     ipfs = IPFSClient(config.ipfs_gateway)
-    cofhe = MockCoFHEClient()
+    cofhe = _TestCoFHEClient()
     sem = asyncio.Semaphore(2)
 
     shutdown = asyncio.Event()
@@ -169,7 +184,7 @@ async def test_assignment_poller_handles_network_errors():
 
     w3 = MagicMock(spec=Web3)
     ipfs = IPFSClient(config.ipfs_gateway)
-    cofhe = MockCoFHEClient()
+    cofhe = _TestCoFHEClient()
     sem = asyncio.Semaphore(2)
 
     shutdown = asyncio.Event()

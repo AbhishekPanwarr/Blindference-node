@@ -41,7 +41,7 @@ async function main() {
   })
 
   const config = createCofheConfig({
-    supportedChains: [chains.arbSepolia],
+    supportedChains: [{ ...chains.arbSepolia, coFheUrl: 'https://fhenix.zone/api/testnet', verifierUrl: 'https://fhenix.zone/api/testnet', thresholdNetworkUrl: 'https://fhenix.zone/api/testnet' }],
   })
   const client = createCofheClient(config)
   await client.connect(publicClient, walletClient)

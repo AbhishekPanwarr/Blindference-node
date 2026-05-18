@@ -15,9 +15,24 @@ from aiohttp import web
 from blindference_node.attestation.mock import MockAttestationBackend
 from blindference_node.config import Config, save_config
 from blindference_node.crypto import (
-    MockCoFHEClient,
+    CoFHEClient,
     encrypt_output_blob,
 )
+
+
+class _TestCoFHEClient(CoFHEClient):
+    """Minimal test double for CoFHE interface."""
+
+    def __init__(self, fixed_key: bytes | None = None) -> None:
+        self._key = fixed_key or b"\x01" * 32
+        self._counter = 0
+
+    def decrypt(self, ct_handle: int) -> int:
+        return int.from_bytes(self._key[:16], "big")
+
+    def encrypt(self, value: int) -> int:
+        self._counter += 1
+        return 0xDEAD0000 + self._counter
 from blindference_node.icl_client import ICLClient
 from blindference_node.ipfs_client import IPFSClient
 from blindference_node.job_handler import handle_job
@@ -65,7 +80,8 @@ def _create_mock_icl_app() -> web.Application:
 
     async def claim_handler(request: web.Request) -> web.Response:
         return web.json_response(
-            {"promptKeyHandle": "0xmock-handle", "claimDeadline": int(time.time()) + 600}
+            {"promptKeyHandle": "0xmock-handle", "claimDeadline": int(time.time()) + 600,
+             "kpHighHandle": 0xDEAD0001, "kpLowHandle": 0xDEAD0002}
         )
 
     async def result_handler(request: web.Request) -> web.Response:
@@ -79,7 +95,7 @@ def _create_mock_icl_app() -> web.Application:
     # Attach received state to app for inspection
     async def job_status_handler(request: web.Request) -> web.Response:
         return web.json_response(
-            {"jobId": request.match_info["job_id"],
+            {"jobId": request.match_info["job_id"], "kpHighHandle": 0xDEAD0001, "kpLowHandle": 0xDEAD0002,
              "status": "running",
              "outputCid": "QmE2EMockLeaderCID",
              "leaderCommitment": None}
@@ -193,7 +209,7 @@ async def test_e2e_leader_complete_flow(tmp_dir, wallet, config):
         # --- Step 2: Execute leader job ---
         w3 = _mock_w3()
         ipfs = IPFSClient(config.ipfs_gateway)
-        cofhe = MockCoFHEClient(fixed_key=b"\x01" * 32)
+        cofhe = _TestCoFHEClient(fixed_key=b"\x01" * 32)
 
         test_prompt = "What is FHE?"
         test_blob = encrypt_output_blob(test_prompt, b"\x01" * 32)
@@ -212,6 +228,8 @@ async def test_e2e_leader_complete_flow(tmp_dir, wallet, config):
                     "deadline": int(time.time()) + 600,
                     "insuranceOptIn": False,
                     "userAddress": "0xabC1230000000000000000000000000000000001",
+                    "kpHighHandle": 0xDEAD0001,
+                    "kpLowHandle": 0xDEAD0002,
                 },
                 config,
                 acct,
@@ -270,7 +288,7 @@ async def test_e2e_verifier_complete_flow(tmp_dir, wallet, config):
         # --- Step 2: Execute verifier job ---
         w3 = _mock_w3()
         ipfs = IPFSClient(config.ipfs_gateway)
-        cofhe = MockCoFHEClient(fixed_key=b"\x01" * 32)
+        cofhe = _TestCoFHEClient(fixed_key=b"\x01" * 32)
 
         test_prompt = "Verify this prompt please"
         test_blob = encrypt_output_blob(test_prompt, b"\x01" * 32)
@@ -288,6 +306,8 @@ async def test_e2e_verifier_complete_flow(tmp_dir, wallet, config):
                     "promptCid": "QmE2EPrompt2",
                     "deadline": int(time.time()) + 600,
                     "insuranceOptIn": True,
+                    "kpHighHandle": 0xDEAD0001,
+                    "kpLowHandle": 0xDEAD0002,
                 },
                 config,
                 acct,

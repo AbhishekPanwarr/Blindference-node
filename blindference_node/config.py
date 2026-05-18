@@ -7,7 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-DEFAULT_CONFIG_DIR = os.path.expanduser("~/.blindference")
+_ENV_CONFIG_DIR = os.environ.get("BLF_CONFIG_DIR", "")
+DEFAULT_CONFIG_DIR = os.path.expanduser(_ENV_CONFIG_DIR) if _ENV_CONFIG_DIR else os.path.expanduser("~/.blindference")
 DEFAULT_CONFIG_PATH = os.path.join(DEFAULT_CONFIG_DIR, "config.json")
 
 
@@ -33,8 +34,8 @@ class Config(BaseModel):
     attestation_cert_hash: str = ""
     attestation_expiry: int = 0
     stake_amount_wei: int = 0
-    cofhe_mode: str = "mock"
-    cofhe_endpoint: str = "https://cofhe-api.fhenix.zone"
+    cofhe_mode: str = "bridge"
+    cofhe_endpoint: str = "https://arb-sepolia.g.alchemy.com/v2/demo"
     cofhe_chain_id: int = 421614
     skip_output_key_storage: bool = False
 

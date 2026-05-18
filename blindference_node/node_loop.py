@@ -61,6 +61,61 @@ async def _sleep_or_shutdown(shutdown: asyncio.Event, seconds: float) -> bool:
         return False
 
 
+async def _re_attest(
+    icl: ICLClient,
+    config: Config,
+    wallet: LocalAccount,
+    w3: Web3,
+) -> bool:
+    """Automatically re‑attest the node via the ICL.
+
+    Generates a fresh mock attestation quote, submits it to the ICL,
+    persists the new certificate, and best‑effort updates the on‑chain
+    attestation record.
+
+    Returns:
+        ``True`` on success, ``False`` on failure.
+    """
+    backend = MockAttestationBackend()
+    logger.info("Auto‑re‑attesting node …")
+    try:
+        challenge = await icl.get_challenge()
+        nonce_h = challenge.get("nonce", "")
+        nonce = bytes.fromhex(nonce_h.replace("0x", "").replace("0X", "")) if nonce_h else b""
+        quote = backend.get_quote(nonce)
+        result = await icl.submit_attestation(
+            backend.backend_type(),
+            quote,
+            backend.get_runtime_hash(),
+            challenge.get("challengeId", ""),
+        )
+        config.attestation_cert_hash = result.get("certHash", "")
+        config.attestation_expiry = result.get("expiry", 0)
+        save_config(config)
+
+        # Best‑effort on‑chain update
+        try:
+            await asyncio.to_thread(
+                update_attestation,
+                w3,
+                config,
+                wallet,
+                config.attestation_cert_hash,
+                config.attestation_expiry,
+            )
+        except Exception as exc:
+            logger.warning("On‑chain attestation update failed: %s", exc)
+
+        logger.info(
+            "Attestation renewed — new expiry: %d",
+            config.attestation_expiry,
+        )
+        return True
+    except Exception as exc:
+        logger.error("Auto‑re‑attestation failed: %s", exc)
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Core coroutines
 # ---------------------------------------------------------------------------
@@ -104,43 +159,16 @@ async def attestation_watchdog(
     backend = MockAttestationBackend()
 
     while not shutdown.is_set():
-        remaining = config.attestation_expiry - int(time.time())
-        if remaining < 6 * 3600 and config.attestation_expiry > 0:
-            logger.info("Cert expires in %ds — re‑attesting …", remaining)
-            try:
-                challenge = await icl.get_challenge()
-                nonce_h = challenge.get("nonce", "")
-                nonce = bytes.fromhex(nonce_h.replace("0x", "").replace("0X", "")) if nonce_h else b""
-                quote = backend.get_quote(nonce)
-                result = await icl.submit_attestation(
-                    backend.backend_type(),
-                    quote,
-                    backend.get_runtime_hash(),
-                    challenge.get("challengeId", ""),
-                )
-                config.attestation_cert_hash = result.get("certHash", "")
-                config.attestation_expiry = result.get("expiry", 0)
-                save_config(config)
+        now = int(time.time())
+        remaining = config.attestation_expiry - now
+        needs_re_attest = config.attestation_expiry == 0 or remaining < 6 * 3600
 
-                # Best‑effort on‑chain update
-                try:
-                    await asyncio.to_thread(
-                        update_attestation,
-                        w3,
-                        config,
-                        wallet,
-                        config.attestation_cert_hash,
-                        config.attestation_expiry,
-                    )
-                except Exception as exc:
-                    logger.warning("On‑chain attestation update failed: %s", exc)
-
-                logger.info(
-                    "Attestation renewed — new expiry: %d",
-                    result.get("expiry", 0),
-                )
-            except Exception as exc:
-                logger.error("Re‑attestation failed: %s", exc)
+        if needs_re_attest:
+            logger.info(
+                "Cert %s — re‑attesting …",
+                "missing" if config.attestation_expiry == 0 else f"expires in {remaining}s",
+            )
+            await _re_attest(icl, config, wallet, w3)
 
         if await _sleep_or_shutdown(shutdown, 600):  # 10 minutes
             return
@@ -212,29 +240,17 @@ async def _job_wrapper(
 async def start_daemon(config: Config, wallet: LocalAccount) -> None:
     """Start the node daemon and run until interrupted.
 
-    Validates that an attestation certificate exists and hasn't expired,
-    then starts three concurrent loops:
+    Validates that an attestation certificate exists and hasn't expired.
+    If the certificate is missing or expired, automatically re‑attests via
+    the ICL before starting the worker loops.
+
+    Then starts three concurrent loops:
         - ``heartbeat_loop`` (every 60 s)
         - ``attestation_watchdog`` (every 10 min)
         - ``assignment_poller`` (every 5 s)
 
     Gracefully shuts down on ``SIGINT`` / ``SIGTERM``.
     """
-    if config.attestation_expiry == 0:
-        logger.error(
-            "No attestation certificate found. Run `blindference-node init` first."
-        )
-        return
-
-    now = int(time.time())
-    if config.attestation_expiry <= now:
-        logger.error(
-            "Attestation certificate expired %d seconds ago. "
-            "Run `blindference-node attest` to re‑attest.",
-            now - config.attestation_expiry,
-        )
-        return
-
     _setup_logging(config)
 
     wallet_key = "0x" + wallet.key.hex()
@@ -243,6 +259,23 @@ async def start_daemon(config: Config, wallet: LocalAccount) -> None:
     ipfs = IPFSClient(config.ipfs_gateway)
     cofhe = get_cofhe_client(config, wallet_key)
     concurrent_jobs = asyncio.Semaphore(2)
+
+    now = int(time.time())
+    cert_missing = config.attestation_expiry == 0
+    cert_expired = config.attestation_expiry <= now
+
+    if cert_missing or cert_expired:
+        logger.warning(
+            "Attestation certificate %s — triggering auto‑re‑attest …",
+            "missing" if cert_missing else f"expired {now - config.attestation_expiry}s ago",
+        )
+        if not await _re_attest(icl, config, wallet, w3):
+            logger.error(
+                "Auto‑re‑attestation failed. "
+                "Ensure the ICL is reachable and run `blindference-node attest` manually."
+            )
+            return
+        now = int(time.time())
 
     logger.info("Daemon starting …")
     logger.info("  Address : %s", config.node_address)

@@ -56,21 +56,6 @@ class CoFHEClient(ABC):
         """CoFHE‑encrypt *value* and return the ``uint256`` handle."""
 
 
-class MockCoFHEClient(CoFHEClient):
-    """Mock CoFHE client — returns a fixed key as an integer."""
-
-    def __init__(self, fixed_key: bytes | None = None) -> None:
-        self._key = fixed_key or os.urandom(32)
-        self._counter = 0
-
-    def decrypt(self, ct_handle: int) -> int:
-        return int.from_bytes(self._key[:16], "big")
-
-    def encrypt(self, value: int) -> int:
-        self._counter += 1
-        return 0xDEAD0000 + self._counter
-
-
 # ---------------------------------------------------------------------------
 # CoFHE factory
 # ---------------------------------------------------------------------------
@@ -79,13 +64,10 @@ class MockCoFHEClient(CoFHEClient):
 def get_cofhe_client(config: Config, wallet_private_key: str) -> CoFHEClient:
     """Return the CoFHE client selected by ``config.cofhe_mode``.
 
-    ``"mock"``   → ``MockCoFHEClient`` (fixed key, no network).
     ``"python"`` → ``CoFHERealClient`` (HTTP to Fhenix API).
-    ``"bridge"`` → ``CoFHEBridgeClient`` (Node.js subprocess).
+    ``"bridge"`` → ``CoFHEBridgeClient`` (Node.js subprocess using @cofhe/sdk/node).
     """
     mode = config.cofhe_mode.lower()
-    if mode == "mock":
-        return MockCoFHEClient()
     if mode == "python":
         return CoFHERealClient(
             wallet_private_key=wallet_private_key,
@@ -94,8 +76,8 @@ def get_cofhe_client(config: Config, wallet_private_key: str) -> CoFHEClient:
         )
     if mode == "bridge":
         return CoFHEBridgeClient(wallet_private_key=wallet_private_key, rpc_url=config.cofhe_endpoint)
-    logger.warning("Unknown cofhe_mode=%r — falling back to mock", config.cofhe_mode)
-    return MockCoFHEClient()
+    logger.warning("Unknown cofhe_mode=%r — falling back to bridge", config.cofhe_mode)
+    return CoFHEBridgeClient(wallet_private_key=wallet_private_key, rpc_url=config.cofhe_endpoint)
 
 
 # ---------------------------------------------------------------------------

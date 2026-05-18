@@ -8,8 +8,8 @@ import pytest
 from blindference_node.crypto import (
     CoFHEAPIError,
     CoFHEBridgeClient,
+    CoFHEClient,
     CoFHERealClient,
-    MockCoFHEClient,
     format_output_key_handle,
     get_cofhe_client,
     reconstruct_key,
@@ -56,15 +56,30 @@ def test_format_output_key_handle():
 # ==================================================================
 
 
-def test_mock_cofhe_decrypt_returns_int():
-    cofhe = MockCoFHEClient()
+class _TestCoFHEClient(CoFHEClient):
+    """Minimal test double for CoFHE interface."""
+
+    def __init__(self, fixed_key: bytes | None = None) -> None:
+        self._key = fixed_key or b"\x01" * 32
+        self._counter = 0
+
+    def decrypt(self, ct_handle: int) -> int:
+        return int.from_bytes(self._key[:16], "big")
+
+    def encrypt(self, value: int) -> int:
+        self._counter += 1
+        return 0xDEAD0000 + self._counter
+
+
+def test_test_cofhe_decrypt_returns_int():
+    cofhe = _TestCoFHEClient()
     val = cofhe.decrypt(12345)
     assert isinstance(val, int)
     assert val == cofhe.decrypt(99999)  # same fixed key
 
 
-def test_mock_cofhe_encrypt_returns_int():
-    cofhe = MockCoFHEClient()
+def test_test_cofhe_encrypt_returns_int():
+    cofhe = _TestCoFHEClient()
     h = cofhe.encrypt(42)
     assert isinstance(h, int)
     assert h != cofhe.encrypt(42)  # counter increments
@@ -75,11 +90,11 @@ def test_mock_cofhe_encrypt_returns_int():
 # ==================================================================
 
 
-def test_factory_returns_mock_by_default():
+def test_factory_returns_bridge_by_default():
     from blindference_node.config import Config
     config = Config()
     client = get_cofhe_client(config, "0x" + "aa" * 32)
-    assert isinstance(client, MockCoFHEClient)
+    assert isinstance(client, CoFHEBridgeClient)
 
 
 def test_factory_returns_python_client():
