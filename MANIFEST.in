@@ -1,6 +1,6 @@
 include README.md
 include LICENSE
-recursive-include contracts/abis *.json
 recursive-include blindference_node/contracts/abis *.json
+recursive-include blindference_node/scripts *.mjs *.ts
 global-exclude __pycache__
 global-exclude *.py[co]
