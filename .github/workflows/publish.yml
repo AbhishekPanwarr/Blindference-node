@@ -79,7 +79,9 @@ jobs:
           path: dist/
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.BLF }}
-          attestations: false
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.BLF }}
+        run: |
+          pip install twine
+          twine upload dist/* --verbose
