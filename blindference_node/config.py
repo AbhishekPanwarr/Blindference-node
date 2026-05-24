@@ -25,12 +25,12 @@ class Config(BaseModel):
     supported_model_ids: list[str] = Field(default_factory=list)
     attestation_backend: str = "mock"
     icl_endpoint: str = "https://icl.blindference.xyz"
-    fhenix_rpc: str = "https://testnet.fhenix.zone"
+    fhenix_rpc: str = ""
     ipfs_gateway: str = "https://node.lighthouse.storage"
     model_cache_dir: str = os.path.join(DEFAULT_CONFIG_DIR, "models")
     log_level: str = "INFO"
     zdr_compliant: bool = False
-    network: str = "fhenix_testnet"
+    network: str = "arbitrum_sepolia"
     attestation_cert_hash: str = ""
     attestation_expiry: int = 0
     registered_on_chain: bool = False

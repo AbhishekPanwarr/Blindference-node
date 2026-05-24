@@ -352,7 +352,8 @@ def attest(mock: bool, tee_key: str | None) -> None:
         BLF_KEY_PASSWORD        — keystore password (if absent, prompts)
         MOCK_ATTESTATION_KEY    — mock attestation quote key (default: weloveblindference)
         BLF_ICL_ENDPOINT        — ICL base URL (default: https://icl.blindference.xyz)
-        BLF_FHENIX_RPC          — EVM RPC endpoint (default: https://testnet.fhenix.zone)
+        BLF_RPC_URL             — Arbitrum Sepolia RPC endpoint (preferred)
+        BLF_FHENIX_RPC          — Legacy alias for EVM RPC endpoint
     """
 
     config = load_config()
@@ -456,7 +457,12 @@ def attest(mock: bool, tee_key: str | None) -> None:
     click.echo("\nOn-chain Registration")
     click.echo("-" * 60)
 
-    rpc = os.environ.get("BLF_FHENIX_RPC", "https://testnet.fhenix.zone")
+    # NodeRegistry lives on Arbitrum Sepolia (chain 421614), not Fhenix testnet.
+    # Prefer BLF_RPC_URL (Arbitrum Sepolia Alchemy key) and fall back to legacy
+    # BLF_FHENIX_RPC for backwards compatibility.
+    rpc = os.environ.get("BLF_RPC_URL") or os.environ.get(
+        "BLF_FHENIX_RPC", "https://testnet.fhenix.zone"
+    )
     w3 = Web3(Web3.HTTPProvider(rpc))
     registry_deployed, registry_name = _check_node_registry_deployed(w3)
 

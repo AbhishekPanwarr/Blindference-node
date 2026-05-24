@@ -15,7 +15,7 @@ def test_default_config():
     assert cfg.attestation_backend == "mock"
     assert cfg.log_level == "INFO"
     assert cfg.zdr_compliant is False
-    assert cfg.network == "fhenix_testnet"
+    assert cfg.network == "arbitrum_sepolia"
 
 
 def test_save_and_load_roundtrip():
