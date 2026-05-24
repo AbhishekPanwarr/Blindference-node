@@ -25,14 +25,24 @@ class GroqBackend(ModelBackend):
     def name(self) -> str:
         return "groq"
 
+    def _get_api_key(self) -> str:
+        """Return the Groq API key, stripping accidental wrapping quotes."""
+        raw = os.environ.get("GROQ_API_KEY", "")
+        raw = raw.strip()
+        if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ('"', "'"):
+            raw = raw[1:-1]
+        return raw
+
     def is_available(self) -> bool:
-        return bool(os.environ.get("GROQ_API_KEY"))
+        return bool(self._get_api_key())
 
     def supported_models(self) -> list[str]:
         return list(self._MODEL_IDS)
 
     def run(self, model_id: str, prompt: str) -> str:
-        api_key = os.environ["GROQ_API_KEY"]
+        api_key = self._get_api_key()
+        if not api_key:
+            raise RuntimeError("GROQ_API_KEY not set")
         deterministic_prompt = _deterministic_cloud_prompt(model_id, prompt)
         api_model_id = model_id.replace("groq:", "")
 

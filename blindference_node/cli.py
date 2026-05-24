@@ -46,7 +46,7 @@ def _load_env_file() -> None:
     except ImportError:
         pass
 
-    # Fallback simple parser
+    # Fallback simple parser (handles quoted values)
     for env_path in paths:
         if not _os.path.isfile(env_path):
             continue
@@ -60,6 +60,9 @@ def _load_env_file() -> None:
                 key, sep, value = line.partition("=")
                 key = key.strip()
                 value = value.strip()
+                # Strip matching single or double quotes (e.g. KEY="val" → KEY=val)
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                    value = value[1:-1]
                 if key and key not in _os.environ:
                     _os.environ[key] = value
 
