@@ -113,6 +113,9 @@ def test_register_node_via_operator_registry(mock_w3, config, wallet):
 def test_register_node_via_attestation_commit(mock_w3, config, wallet):
     """When NodeOperatorRegistry unavailable, fallback to attestation commit()."""
     with patch(
+        "blindference_node.registry.get_new_node_registry",
+        return_value=None,
+    ), patch(
         "blindference_node.registry.get_node_operator_registry",
         return_value=None,
     ), patch("blindference_node.registry.get_node_registry") as mock_get_att:
@@ -140,6 +143,9 @@ def test_register_node_via_attestation_commit(mock_w3, config, wallet):
 def test_register_node_no_contract_returns_none(mock_w3, config, wallet):
     """When no contract is available, return None without error."""
     with patch(
+        "blindference_node.registry.get_new_node_registry",
+        return_value=None,
+    ), patch(
         "blindference_node.registry.get_node_operator_registry",
         return_value=None,
     ), patch(
