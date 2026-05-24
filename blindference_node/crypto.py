@@ -470,10 +470,10 @@ def encrypt_output_blob(text: str, key: bytes) -> bytes:
     """Encrypt *text* with AES-256-GCM.
 
     Returns packed blob matching the Blindference frontend format:
-        ``iv (16) || authTag (16) || ciphertext``
+        ``iv (12) || authTag (16) || ciphertext``
     """
     aes = AESGCM(key)
-    iv = os.urandom(16)
+    iv = os.urandom(12)
     ct_with_tag = aes.encrypt(iv, text.encode("utf-8"), None)
     # AESGCM returns ciphertext || tag(16)
     ciphertext = ct_with_tag[:-16]
@@ -485,13 +485,13 @@ def decrypt_prompt_blob(blob: bytes, key: bytes) -> str:
     """Decrypt an AES-256-GCM blob.
 
     Blob format (Blindference frontend):
-        ``iv (16) || authTag (16) || ciphertext``
+        ``iv (12) || authTag (16) || ciphertext``
     """
-    if len(blob) < 32:
-        raise ValueError(f"Blob too short ({len(blob)} bytes) — need at least 32 for iv+tag")
-    iv = blob[:16]
-    auth_tag = blob[16:32]
-    ciphertext = blob[32:]
+    if len(blob) < 28:
+        raise ValueError(f"Blob too short ({len(blob)} bytes) — need at least 28 for iv+tag")
+    iv = blob[:12]
+    auth_tag = blob[12:28]
+    ciphertext = blob[28:]
     aes = AESGCM(key)
     # AESGCM expects ciphertext || tag
     plaintext = aes.decrypt(iv, ciphertext + auth_tag, None)

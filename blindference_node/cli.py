@@ -784,11 +784,164 @@ def models_add(dotted_path: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# withdraw (stub)
+# staking
 # ---------------------------------------------------------------------------
 
 
-@main.command()
-def withdraw() -> None:
-    """Initiate stake withdrawal (not yet implemented)."""
-    click.echo("`withdraw` is not implemented yet.")
+@main.group("staking")
+def staking_group() -> None:
+    """BLIND token staking — stake, unstake, and check status."""
+
+
+@staking_group.command("stake")
+@click.argument("amount", type=float)
+def staking_stake(amount: float) -> None:
+    """Stake BLIND tokens (e.g. 1000)."""
+    from blindference_node.registry import (
+        approve_blind,
+        get_stake_info,
+        get_staking_contract,
+        stake_blind,
+    )
+
+    config = load_config()
+    password = os.environ.get("BLF_KEY_PASSWORD")
+    if password is None:
+        password = click.prompt("Wallet decryption password", hide_input=True, default="")
+    wallet = load_wallet(config.keystore_path, password)
+
+    rpc = os.environ.get("BLF_RPC_URL") or os.environ.get("BLF_FHENIX_RPC")
+    if not rpc:
+        click.echo("Error: BLF_RPC_URL not set.", err=True)
+        raise SystemExit(1)
+
+    w3 = Web3(Web3.HTTPProvider(rpc))
+    amount_wei = int(amount * 10 ** 18)
+
+    click.echo(f"Staking {amount} BLIND ({amount_wei} wei) …")
+
+    # Check current stake
+    info = get_stake_info(w3, wallet.address)
+    if info and info["staked"] > 0:
+        click.echo(f"  Already staked: {info['staked'] / 10 ** 18} BLIND")
+        if not click.confirm("  Add to existing stake?", default=True):
+            raise SystemExit(0)
+
+    # Approve
+    click.echo("  Approving BLIND transfer …")
+    approve_tx = approve_blind(w3, wallet, amount_wei)
+    if not approve_tx:
+        click.echo("Approve failed.", err=True)
+        raise SystemExit(1)
+
+    # Stake
+    click.echo("  Staking …")
+    stake_tx = stake_blind(w3, wallet, amount_wei)
+    if stake_tx:
+        click.echo(f"  Staked successfully: {stake_tx}")
+        info = get_stake_info(w3, wallet.address)
+        if info:
+            click.echo(f"  Total staked: {info['staked'] / 10 ** 18} BLIND")
+    else:
+        click.echo("Stake failed.", err=True)
+        raise SystemExit(1)
+
+
+@staking_group.command("unstake")
+def staking_unstake() -> None:
+    """Initiate unstake (starts 96h unbonding)."""
+    from blindference_node.registry import get_stake_info, initiate_unstake
+
+    config = load_config()
+    password = os.environ.get("BLF_KEY_PASSWORD")
+    if password is None:
+        password = click.prompt("Wallet decryption password", hide_input=True, default="")
+    wallet = load_wallet(config.keystore_path, password)
+
+    rpc = os.environ.get("BLF_RPC_URL") or os.environ.get("BLF_FHENIX_RPC")
+    if not rpc:
+        click.echo("Error: BLF_RPC_URL not set.", err=True)
+        raise SystemExit(1)
+
+    w3 = Web3(Web3.HTTPProvider(rpc))
+    info = get_stake_info(w3, wallet.address)
+    if not info or info["staked"] == 0:
+        click.echo("No active stake found.")
+        return
+
+    click.echo(f"Initiating unstake of {info['staked'] / 10 ** 18} BLIND …")
+    tx = initiate_unstake(w3, wallet)
+    if tx:
+        click.echo(f"  Unstake initiated: {tx}")
+        click.echo(f"  Available to withdraw after: {info['unbondingAvailableAt']} (96 hours)")
+    else:
+        click.echo("Unstake initiation failed.", err=True)
+        raise SystemExit(1)
+
+
+@staking_group.command("withdraw")
+def staking_withdraw() -> None:
+    """Complete unstake after unbonding period."""
+    from blindference_node.registry import complete_unstake, get_stake_info
+
+    config = load_config()
+    password = os.environ.get("BLF_KEY_PASSWORD")
+    if password is None:
+        password = click.prompt("Wallet decryption password", hide_input=True, default="")
+    wallet = load_wallet(config.keystore_path, password)
+
+    rpc = os.environ.get("BLF_RPC_URL") or os.environ.get("BLF_FHENIX_RPC")
+    if not rpc:
+        click.echo("Error: BLF_RPC_URL not set.", err=True)
+        raise SystemExit(1)
+
+    w3 = Web3(Web3.HTTPProvider(rpc))
+    info = get_stake_info(w3, wallet.address)
+    if not info or info["unbonding"] == 0:
+        click.echo("No unbonding stake found.")
+        return
+
+    now = w3.eth.get_block("latest")["timestamp"]
+    if now < info["unbondingAvailableAt"]:
+        remaining = info["unbondingAvailableAt"] - now
+        click.echo(f"Unbonding not ready. {remaining} seconds remaining.")
+        return
+
+    click.echo(f"Completing unstake of {info['unbonding'] / 10 ** 18} BLIND …")
+    tx = complete_unstake(w3, wallet)
+    if tx:
+        click.echo(f"  Unstake completed: {tx}")
+    else:
+        click.echo("Unstake completion failed.", err=True)
+        raise SystemExit(1)
+
+
+@staking_group.command("status")
+def staking_status() -> None:
+    """Show BLIND stake status."""
+    from blindference_node.registry import get_stake_info
+
+    config = load_config()
+    rpc = os.environ.get("BLF_RPC_URL") or os.environ.get("BLF_FHENIX_RPC")
+    if not rpc:
+        click.echo("Error: BLF_RPC_URL not set.", err=True)
+        raise SystemExit(1)
+
+    w3 = Web3(Web3.HTTPProvider(rpc))
+    info = get_stake_info(w3, config.node_address)
+
+    click.echo("=" * 60)
+    click.echo("  BLIND Stake Status")
+    click.echo("=" * 60)
+    if info:
+        click.echo(f"  Staked          : {info['staked'] / 10 ** 18:.2f} BLIND")
+        click.echo(f"  Unbonding       : {info['unbonding'] / 10 ** 18:.2f} BLIND")
+        if info["unbondingAvailableAt"] > 0:
+            now = w3.eth.get_block("latest")["timestamp"]
+            remaining = max(0, info["unbondingAvailableAt"] - now)
+            click.echo(f"  Unbond ready in : {remaining}s")
+        click.echo(f"  Failures        : {info['consecutiveFailures']}")
+        click.echo(f"  Active          : {'Yes' if info['active'] else 'No'}")
+    else:
+        click.echo("  No stake info found (staking contract may not be deployed).")
+    click.echo("=" * 60)

@@ -81,7 +81,31 @@ blindference-node attest --mock --tee-key mydevkey
 
 After ICL attestation, optionally register on-chain with gas estimation.
 
-### 4. Run
+### 4. Stake BLIND Tokens
+
+Nodes must stake at least **1000 BLIND** to participate in inference quorums. Staking provides economic security — stake is slashed if a node produces incorrect output or times out.
+
+```bash
+# Stake 1000 BLIND (minimum)
+blindference-node staking stake 1000
+
+# Check your stake status
+blindference-node staking status
+
+# Initiate unstake (starts 96h unbonding)
+blindference-node staking unstake
+
+# Complete unstake after unbonding period
+blindference-node staking withdraw
+```
+
+**Staking Economics:**
+- Minimum stake: **1000 BLIND**
+- Unbonding period: **96 hours**
+- Reward per job: **1 BLIND** (60% leader, 20% each verifier)
+- Slashing: **3 consecutive failures** → entire stake hard-slashed on-chain
+
+### 5. Run
 
 ```bash
 blindference-node run
@@ -106,11 +130,14 @@ The daemon starts four concurrent loops:
 | `attest` | Attest node with ICL (mock / TEE) and optionally register on-chain | ✅ Ready |
 | `run` | Start daemon — heartbeat, watchdog, job polling & execution | ✅ Ready |
 | `status` | Show node status — address, tier, models, cert expiry | ✅ Ready |
+| `staking stake` | Stake BLIND tokens to join inference quorums | ✅ Ready |
+| `staking unstake` | Initiate unstake (starts 96h unbonding) | ✅ Ready |
+| `staking withdraw` | Complete withdrawal after unbonding period | ✅ Ready |
+| `staking status` | Show BLIND stake status and failure count | ✅ Ready |
 | `models list` | List all registered inference backends and availability | ✅ Ready |
 | `models test` | Test a specific backend with a prompt | ✅ Ready |
 | `models add` | Register a custom backend from a dotted Python path | ✅ Ready |
 | `test-determinism` | Run GPU determinism self-test with vLLM or cloud APIs | ✅ Ready |
-| `withdraw` | Initiate stake withdrawal | ⚠️ Not yet implemented |
 
 ---
 

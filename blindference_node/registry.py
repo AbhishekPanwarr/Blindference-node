@@ -27,6 +27,7 @@ _CONTRACTS = {
         "NodeRegistry": "0x72C0Ead949Fd2C346598a30AF1A69c3c5Cb86082",  # Deployed proxy
         "PromptKeyStore": "0x1E22dD12f448B15f1Ca8560fB6B4463834FaAf73",
         "ExecutionCommitmentRegistry": "0xcd45aefE9a16772528fa30B7d47958a95e83440C",
+        "BlindferenceStaking": "0x222Ac74201Ed58915e42Ee5be626d939fd234D0b",
     },
 }
 
@@ -584,3 +585,143 @@ def _to_bytes32(value: str) -> bytes:
         import hashlib
         return hashlib.sha256(raw).digest()
     return raw.ljust(32, b"\x00")
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — BLIND Token Staking
+# ---------------------------------------------------------------------------
+
+
+def get_staking_contract(w3):
+    """Return a ``BlindferenceStaking`` contract handle, or ``None``."""
+    network_contracts = _CONTRACTS.get("fhenix_testnet", {})
+    addr = network_contracts.get("BlindferenceStaking", "")
+    if not addr or addr == "0x" + "0" * 40 or int(addr, 16) == 0:
+        return None
+    try:
+        return _get_contract(w3, "BlindferenceStaking", addr)
+    except FileNotFoundError:
+        return None
+
+
+def stake_blind(w3, wallet: LocalAccount, amount_wei: int) -> str | None:
+    """Stake BLIND tokens. Requires prior ERC-20 approve."""
+    contract = get_staking_contract(w3)
+    if contract is None:
+        print("Staking skipped: BlindferenceStaking not deployed", file=sys.stderr)
+        return None
+
+    try:
+        tx = contract.functions.stake(amount_wei).build_transaction(
+            {
+                "from": wallet.address,
+                "nonce": w3.eth.get_transaction_count(wallet.address),
+                "gas": 200_000,
+                "gasPrice": _estimate_gas_price(w3),
+            }
+        )
+        signed = wallet.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        _print_tx(receipt.transactionHash.hex(), "Stake tx")
+        return receipt.transactionHash.hex()
+    except Exception as exc:
+        print(f"Stake failed: {exc}", file=sys.stderr)
+        return None
+
+
+def approve_blind(w3, wallet: LocalAccount, amount_wei: int) -> str | None:
+    """Approve BlindferenceStaking to spend BLIND tokens."""
+    contract = get_staking_contract(w3)
+    if contract is None:
+        print("Approve skipped: BlindferenceStaking not deployed", file=sys.stderr)
+        return None
+
+    blind_token = _get_contract(w3, "BLIND", contract.functions.blindToken().call())
+    try:
+        tx = blind_token.functions.approve(contract.address, amount_wei).build_transaction(
+            {
+                "from": wallet.address,
+                "nonce": w3.eth.get_transaction_count(wallet.address),
+                "gas": 100_000,
+                "gasPrice": _estimate_gas_price(w3),
+            }
+        )
+        signed = wallet.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        _print_tx(receipt.transactionHash.hex(), "Approve tx")
+        return receipt.transactionHash.hex()
+    except Exception as exc:
+        print(f"Approve failed: {exc}", file=sys.stderr)
+        return None
+
+
+def initiate_unstake(w3, wallet: LocalAccount) -> str | None:
+    """Initiate BLIND unstake (starts 96h unbonding)."""
+    contract = get_staking_contract(w3)
+    if contract is None:
+        print("Unstake skipped: BlindferenceStaking not deployed", file=sys.stderr)
+        return None
+
+    try:
+        tx = contract.functions.initiateUnstake().build_transaction(
+            {
+                "from": wallet.address,
+                "nonce": w3.eth.get_transaction_count(wallet.address),
+                "gas": 150_000,
+                "gasPrice": _estimate_gas_price(w3),
+            }
+        )
+        signed = wallet.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        _print_tx(receipt.transactionHash.hex(), "Unstake-init tx")
+        return receipt.transactionHash.hex()
+    except Exception as exc:
+        print(f"Unstake initiation failed: {exc}", file=sys.stderr)
+        return None
+
+
+def complete_unstake(w3, wallet: LocalAccount) -> str | None:
+    """Complete BLIND unstake after unbonding period."""
+    contract = get_staking_contract(w3)
+    if contract is None:
+        print("Unstake completion skipped: BlindferenceStaking not deployed", file=sys.stderr)
+        return None
+
+    try:
+        tx = contract.functions.completeUnstake().build_transaction(
+            {
+                "from": wallet.address,
+                "nonce": w3.eth.get_transaction_count(wallet.address),
+                "gas": 150_000,
+                "gasPrice": _estimate_gas_price(w3),
+            }
+        )
+        signed = wallet.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        _print_tx(receipt.transactionHash.hex(), "Unstake-complete tx")
+        return receipt.transactionHash.hex()
+    except Exception as exc:
+        print(f"Unstake completion failed: {exc}", file=sys.stderr)
+        return None
+
+
+def get_stake_info(w3, node_address: str) -> dict | None:
+    """Return stake info for a node."""
+    contract = get_staking_contract(w3)
+    if contract is None:
+        return None
+    try:
+        info = contract.functions.getStakeInfo(node_address).call()
+        return {
+            "staked": info[0],
+            "unbonding": info[1],
+            "unbondingAvailableAt": info[2],
+            "consecutiveFailures": info[3],
+            "active": info[4],
+        }
+    except Exception:
+        return None
