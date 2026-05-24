@@ -14,7 +14,7 @@ from blindference_node.config import Config, load_config, save_config
 from blindference_node.execution import get_registry, set_registry, run_determinism_self_test
 from blindference_node.icl_client import ICLClient
 from blindference_node.node_loop import start_daemon
-from blindference_node.registry import register_node, get_node_operator_registry
+from blindference_node.registry import register_node, get_node_operator_registry, is_node_registered
 from blindference_node.utils import detect_gpu
 from blindference_node.wallet import generate_wallet, import_wallet, load_wallet
 
@@ -452,11 +452,10 @@ def attest(mock: bool, tee_key: str | None) -> None:
     final_tier = min(config.tier, icl_tier)
     click.echo(f"  Final tier   : {final_tier}")
 
-    # ── On-chain registration (interactive) ───────────────────────────
+    # ── On-chain registration (auto-detect, interactive fallback) ───
     click.echo("\nOn-chain Registration")
     click.echo("-" * 60)
 
-    # Check if NodeRegistry is deployed
     rpc = os.environ.get("BLF_FHENIX_RPC", "https://testnet.fhenix.zone")
     w3 = Web3(Web3.HTTPProvider(rpc))
     registry_deployed, registry_name = _check_node_registry_deployed(w3)
@@ -468,52 +467,67 @@ def attest(mock: bool, tee_key: str | None) -> None:
         config.registered_on_chain = False
     else:
         click.echo(f"  Registry     : {registry_name} deployed")
-        # Interactive prompt
-        if click.confirm("  Register node on-chain? (requires gas for tx)", default=True):
-            try:
-                # Estimate gas
-                gas_estimate = _estimate_register_gas(
-                    w3, wallet_obj.address, use_new_registry=(registry_name == "NodeRegistry")
-                )
-                gas_price = _estimate_gas_price(w3)
-                gas_cost_wei = gas_estimate * gas_price
-                gas_cost_eth = w3.from_wei(gas_cost_wei, "ether")
 
-                click.echo(f"  Gas estimate : {gas_estimate:,} units")
-                click.echo(f"  Gas price    : {w3.from_wei(gas_price, 'gwei'):.2f} gwei")
-                click.echo(f"  Est. cost    : {gas_cost_eth:.6f} ETH")
+        # Auto-detect existing registration
+        registered, active = is_node_registered(w3, wallet_obj.address)
 
-                if click.confirm("  Send registration transaction?", default=True):
-                    tx_hash = register_node(
-                        w3,
-                        Config(
-                            tier=final_tier,
-                            supported_model_ids=config.supported_model_ids,
-                            zdr_compliant=False,
-                        ),
-                        wallet_obj,
-                        0,  # No stake required for mock tier
-                        cert_hash,
-                        attestation_expiry=expiry,
-                    )
-                    if tx_hash:
-                        click.echo(f"  Registration tx : {tx_hash}")
-                        click.echo(f"  Explorer        : https://sepolia.arbiscan.io/tx/{tx_hash}")
-                        config.registered_on_chain = True
-                    else:
-                        click.echo("  Registration failed (no tx hash returned).")
-                        config.registered_on_chain = False
-                else:
-                    click.echo("  Registration cancelled by user.")
-                    config.registered_on_chain = False
-            except Exception as exc:
-                click.echo(f"  Warning: On-chain registration failed: {exc}")
-                click.echo("  The ICL will still add your node after attestation.")
-                config.registered_on_chain = False
+        if registered and active:
+            click.echo(f"  Status       : Already registered and active")
+            click.echo(f"  Address      : {wallet_obj.address}")
+            click.echo("  Skipping registration transaction.")
+            config.registered_on_chain = True
+        elif registered and not active:
+            click.echo(f"  Status       : Registered but INACTIVE")
+            click.echo(f"  Reason       : Attestation expired or heartbeat missed")
+            click.echo("  Run `blindference-node run` to send heartbeat and re-activate.")
+            config.registered_on_chain = True
         else:
-            click.echo("  Skipping on-chain registration.")
-            click.echo("  The ICL will add your node after successful attestation.")
-            config.registered_on_chain = False
+            # Not registered — proceed with interactive registration
+            click.echo("  Status       : Not registered")
+            if click.confirm("  Register node on-chain? (requires gas for tx)", default=True):
+                try:
+                    gas_estimate = _estimate_register_gas(
+                        w3, wallet_obj.address, use_new_registry=(registry_name == "NodeRegistry")
+                    )
+                    gas_price = _estimate_gas_price(w3)
+                    gas_cost_wei = gas_estimate * gas_price
+                    gas_cost_eth = w3.from_wei(gas_cost_wei, "ether")
+
+                    click.echo(f"  Gas estimate : {gas_estimate:,} units")
+                    click.echo(f"  Gas price    : {w3.from_wei(gas_price, 'gwei'):.2f} gwei")
+                    click.echo(f"  Est. cost    : {gas_cost_eth:.6f} ETH")
+
+                    if click.confirm("  Send registration transaction?", default=True):
+                        tx_hash = register_node(
+                            w3,
+                            Config(
+                                tier=final_tier,
+                                supported_model_ids=config.supported_model_ids,
+                                zdr_compliant=False,
+                            ),
+                            wallet_obj,
+                            0,
+                            cert_hash,
+                            attestation_expiry=expiry,
+                        )
+                        if tx_hash:
+                            click.echo(f"  Registration tx : {tx_hash}")
+                            click.echo(f"  Explorer        : https://sepolia.arbiscan.io/tx/{tx_hash}")
+                            config.registered_on_chain = True
+                        else:
+                            click.echo("  Registration failed (no tx hash returned).")
+                            config.registered_on_chain = False
+                    else:
+                        click.echo("  Registration cancelled by user.")
+                        config.registered_on_chain = False
+                except Exception as exc:
+                    click.echo(f"  Warning: On-chain registration failed: {exc}")
+                    click.echo("  The ICL will still add your node after attestation.")
+                    config.registered_on_chain = False
+            else:
+                click.echo("  Skipping on-chain registration.")
+                click.echo("  The ICL will add your node after successful attestation.")
+                config.registered_on_chain = False
 
     click.echo("-" * 60)
 

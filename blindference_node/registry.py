@@ -74,6 +74,26 @@ def get_new_node_registry(w3):
         return None
 
 
+def is_node_registered(w3, node_address: str) -> tuple[bool, bool]:
+    """Check whether a node is already registered and active on-chain.
+
+    Returns:
+        ``(registered, active)`` where *registered* means the node has a
+        non-zero operator record and *active* means ``isActive()`` returns
+        ``True`` (attestation + heartbeat are both valid).
+    """
+    contract = get_new_node_registry(w3)
+    if contract is None:
+        return False, False
+    try:
+        active = contract.functions.isActive(node_address).call()
+        node_data = contract.functions.getNode(node_address).call()
+        registered = node_data[0] != "0x" + "0" * 40  # operator != zero address
+        return registered, active
+    except Exception:
+        return False, False
+
+
 def get_node_operator_registry(w3):
     """Return ``NodeOperatorRegistry`` contract handle, or ``None`` if not deployed."""
     network_contracts = _CONTRACTS.get("fhenix_testnet", {})
