@@ -223,9 +223,9 @@ async def test_submit_result(wallet, icl_client):
         call_args = mock_req.call_args
         body = json.loads(call_args[1].get("data", "{}"))
         assert body["jobId"] == "0xjob1"
-        assert body["outputCid"] == "QmOutputCID"
-        assert body["outputCommitment"] == c.hex()
-        assert body["outputKeyEncrypted"] == "0xhandle1,0xhandle2"
+        assert body["output_cid"] == "QmOutputCID"
+        assert body["commitment_hash"] == c.hex()
+        assert body["encrypted_output_key_high"] == "0xhandle1,0xhandle2"
 
 
 @pytest.mark.asyncio
@@ -246,6 +246,7 @@ async def test_submit_verification(wallet, icl_client):
         call_args = mock_req.call_args
         body = json.loads(call_args[1].get("data", "{}"))
         assert body["jobId"] == "0xjob2"
-        assert body["verifierCommitment"] == c.hex()
+        assert body["verifier_address"] == wallet.address
+        assert body["commitment_hash"] == c.hex()
         assert body["verdict"] == "CONFIRM"
-        assert body["confidenceScore"] == 95
+        assert body["confidence"] == 95

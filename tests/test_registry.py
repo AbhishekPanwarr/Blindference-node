@@ -76,6 +76,8 @@ def test_to_bytes32_long_string_hashes():
 def test_register_node_via_operator_registry(mock_w3, config, wallet):
     """When NodeOperatorRegistry is available, use register()."""
     with patch(
+        "blindference_node.registry.get_new_node_registry", return_value=None
+    ), patch(
         "blindference_node.registry.get_node_operator_registry"
     ) as mock_get_op:
         mock_contract = MagicMock()

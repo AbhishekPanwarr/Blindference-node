@@ -13,8 +13,9 @@ from web3 import Web3
 from blindference_node.attestation.mock import MockAttestationBackend
 from blindference_node.config import Config, save_config
 from blindference_node.crypto import CoFHEClient, get_cofhe_client
-from blindference_node.icl_client import ICLClient
+from blindference_node.icl_client import ICLClient, ICLNodeUnknownError
 from blindference_node.ipfs_client import IPFSClient
+from blindference_node.execution import set_registry
 from blindference_node.job_handler import handle_job
 from blindference_node.registry import update_attestation, update_heartbeat
 
@@ -88,6 +89,7 @@ async def _re_attest(
             quote,
             backend.get_runtime_hash(),
             challenge.get("challengeId", ""),
+            supported_model_ids=config.supported_model_ids,
         )
         config.attestation_cert_hash = result.get("certHash", "")
         config.attestation_expiry = result.get("expiry", 0)
@@ -128,18 +130,38 @@ async def heartbeat_loop(
     wallet: LocalAccount,
     icl: ICLClient,
 ) -> None:
-    """Send a heartbeat every 60 seconds (on‑chain + ICL)."""
+    """Send heartbeats — ICL every 60s, on‑chain every 10 days (864 000s).
+
+    The NodeRegistry heartbeat grace must be set ≥ 864 000s for this to
+    work; otherwise the contract will mark the node inactive long before
+    the next on‑chain beat.  ICL heartbeat (free REST call) keeps the
+    node eligible for job dispatch in the meantime.
+    """
+    ONCHAIN_INTERVAL = 864_000  # 10 days
+    ICL_INTERVAL = 60           # seconds
+
+    last_onchain = 0.0
+
     while not shutdown.is_set():
-        try:
-            await asyncio.to_thread(update_heartbeat, w3, config, wallet)
-        except Exception as exc:
-            logger.warning("On‑chain heartbeat failed: %s", exc)
+        now = time.monotonic()
+
+        # On‑chain heartbeat — infrequent (cheap)
+        if now - last_onchain >= ONCHAIN_INTERVAL:
+            try:
+                await asyncio.to_thread(update_heartbeat, w3, config, wallet)
+                last_onchain = now
+                logger.info("On‑chain heartbeat sent")
+            except Exception as exc:
+                logger.warning("On‑chain heartbeat failed: %s", exc)
+
+        # ICL heartbeat — frequent (free, off‑chain REST call)
         try:
             await icl.send_heartbeat()
             logger.debug("ICL heartbeat sent")
         except Exception as exc:
             logger.warning("ICL heartbeat failed: %s", exc)
-        if await _sleep_or_shutdown(shutdown, 60):
+
+        if await _sleep_or_shutdown(shutdown, ICL_INTERVAL):
             return
 
 
@@ -187,9 +209,15 @@ async def assignment_poller(
     """Poll ICL for pending job assignments every 5 seconds.
 
     Each assignment spawns a ``handle_job`` task, limited to at most
-    ``concurrent_jobs`` running at once.
+    ``concurrent_jobs`` running at once.  Duplicate assignments for the
+    same ``jobId`` are silently skipped — the first task is still alive.
+
+    If the ICL responds 401/404 (node unknown after ICL reset), the poller
+    triggers an automatic re-attestation before resuming polling.
     """
     last_idle_log = 0
+    in_flight: set[str] = set()
+
     while not shutdown.is_set():
         try:
             assignments = await icl.get_assignments()
@@ -198,16 +226,33 @@ async def assignment_poller(
                 for job in assignments:
                     if shutdown.is_set():
                         break
-                    asyncio.create_task(
+                    job_id = str(job.get("jobId", ""))
+                    if not job_id:
+                        continue
+                    if job_id in in_flight:
+                        logger.debug(
+                            "Skipping duplicate assignment for job %s (already in-flight)",
+                            job_id,
+                        )
+                        continue
+                    in_flight.add(job_id)
+                    task = asyncio.create_task(
                         _job_wrapper(
                             job, config, wallet, w3, icl, ipfs, cofhe, concurrent_jobs
                         )
+                    )
+                    task.add_done_callback(
+                        lambda _t, jid=job_id: in_flight.discard(jid)
                     )
             else:
                 now_ts = time.monotonic()
                 if now_ts - last_idle_log >= 60:
                     logger.info("No assignments for last 60s")
                     last_idle_log = now_ts
+        except ICLNodeUnknownError:
+            logger.warning("ICL lost node record — auto re-attesting …")
+            await _re_attest(icl, config, wallet, w3)
+            # Resume loop immediately after re-attest
         except Exception as exc:
             logger.warning("Assignment poll failed: %s", exc)
         if await _sleep_or_shutdown(shutdown, 5):
@@ -224,12 +269,18 @@ async def _job_wrapper(
     cofhe: CoFHEClient,
     sem: asyncio.Semaphore,
 ) -> None:
-    """Run *handle_job* behind the concurrency semaphore."""
+    """Run *handle_job* behind the concurrency semaphore with a hard timeout."""
     role = job.get("role", "leader")
     job_id = job.get("jobId", "?")
     logger.info("Spawning %s job %s", role, job_id)
     async with sem:
-        await handle_job(job, config, wallet, w3, icl, ipfs, cofhe)
+        try:
+            await asyncio.wait_for(
+                handle_job(job, config, wallet, w3, icl, ipfs, cofhe),
+                timeout=300,  # 5 minutes max per job
+            )
+        except asyncio.TimeoutError:
+            logger.error("Job %s: exceeded 5-minute timeout — aborting", job_id)
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +304,17 @@ async def start_daemon(config: Config, wallet: LocalAccount) -> None:
     """
     _setup_logging(config)
 
+    # Load inference backends (built-in + entry points + custom dotted paths)
+    set_registry(config)
+
+    # Validate critical configuration
+    if not config.cofhe_endpoint:
+        logger.error(
+            "CoFHE endpoint not configured. Set BLF_COFHE_ENDPOINT to a real Arbitrum Sepolia RPC URL.\n"
+            "Example: export BLF_COFHE_ENDPOINT='https://arb-sepolia.g.alchemy.com/v2/YOUR_REAL_KEY'"
+        )
+        return
+
     wallet_key = "0x" + wallet.key.hex()
     w3 = Web3(Web3.HTTPProvider(config.fhenix_rpc))
     icl = ICLClient(config.icl_endpoint, wallet)
@@ -269,12 +331,21 @@ async def start_daemon(config: Config, wallet: LocalAccount) -> None:
             "Attestation certificate %s — triggering auto‑re‑attest …",
             "missing" if cert_missing else f"expired {now - config.attestation_expiry}s ago",
         )
-        if not await _re_attest(icl, config, wallet, w3):
+
+    # Always re‑attest on startup so the ICL has a fresh operator record.
+    # This handles ICL restarts (in‑memory DB loss) transparently.
+    if not await _re_attest(icl, config, wallet, w3):
+        if cert_missing or cert_expired:
             logger.error(
                 "Auto‑re‑attestation failed. "
                 "Ensure the ICL is reachable and run `blindference-node attest` manually."
             )
             return
+        logger.warning(
+            "Re‑attestation on startup failed (cert still valid). "
+            "Continuing — operator record may be missing on ICL."
+        )
+    else:
         now = int(time.time())
 
     logger.info("Daemon starting …")

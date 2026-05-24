@@ -243,10 +243,9 @@ async def test_e2e_leader_complete_flow(tmp_dir, wallet, config):
         received = app["received"]["leader_result"]
         assert received is not None
         assert received["jobId"] == "0xe2e-leader"
-        assert received["outputCid"] == "QmE2ELeader"
-        assert "outputCommitment" in received
-        assert len(bytes.fromhex(received["outputCommitment"])) == 32
-        assert "outputKeyEncrypted" in received
+        assert received["output_cid"] == "QmE2ELeader"
+        assert "commitment_hash" in received
+        assert len(bytes.fromhex(received["commitment_hash"])) == 32
 
 
 # ==================================================================
@@ -322,8 +321,9 @@ async def test_e2e_verifier_complete_flow(tmp_dir, wallet, config):
         assert received is not None
         assert received["jobId"] == "0xe2e-verifier"
         assert received["verdict"] == "CONFIRM"
-        assert received["confidenceScore"] == 100
-        assert len(bytes.fromhex(received["verifierCommitment"])) == 32
+        assert received["confidence"] == 100
+        assert "commitment_hash" in received
+        assert len(bytes.fromhex(received["commitment_hash"])) == 32
 
 
 def _mock_w3():

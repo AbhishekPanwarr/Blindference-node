@@ -33,11 +33,13 @@ class Config(BaseModel):
     network: str = "fhenix_testnet"
     attestation_cert_hash: str = ""
     attestation_expiry: int = 0
+    registered_on_chain: bool = False
     stake_amount_wei: int = 0
     cofhe_mode: str = "bridge"
-    cofhe_endpoint: str = "https://arb-sepolia.g.alchemy.com/v2/demo"
+    cofhe_endpoint: str = ""
     cofhe_chain_id: int = 421614
     skip_output_key_storage: bool = False
+    custom_backends: list[str] = Field(default_factory=list)
 
 
 def _env_override(key: str, value: Any) -> Any:

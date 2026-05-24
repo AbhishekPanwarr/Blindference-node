@@ -17,13 +17,14 @@ from blindference_node.config import Config
 # Paths & addresses
 # ---------------------------------------------------------------------------
 
-_ABI_DIR = os.path.join(os.path.dirname(__file__), "..", "contracts", "abis")
+_ABI_DIR = os.path.join(os.path.dirname(__file__), "contracts", "abis")
 
 # Arbitrum Sepolia (chain 421614) — proxy addresses
 _CONTRACTS = {
     "fhenix_testnet": {
         "NodeAttestationRegistry": "0xB54e019e9717a8Ed4746bA9d7F1A3F83cf0a35E0",
         "NodeOperatorRegistry": "0x0000000000000000000000000000000000000000",
+        "NodeRegistry": "0x72C0Ead949Fd2C346598a30AF1A69c3c5Cb86082",  # Deployed proxy
         "PromptKeyStore": "0x1E22dD12f448B15f1Ca8560fB6B4463834FaAf73",
         "ExecutionCommitmentRegistry": "0xcd45aefE9a16772528fa30B7d47958a95e83440C",
     },
@@ -61,6 +62,18 @@ def get_node_registry(w3):
     return _get_contract(w3, "NodeAttestationRegistry", addr)
 
 
+def get_new_node_registry(w3):
+    """Return new ``NodeRegistry`` contract handle, or ``None`` if not deployed."""
+    network_contracts = _CONTRACTS.get("fhenix_testnet", {})
+    addr = network_contracts.get("NodeRegistry", "")
+    if not addr or addr == "0x" + "0" * 40 or int(addr, 16) == 0:
+        return None
+    try:
+        return _get_contract(w3, "NodeRegistry", addr)
+    except FileNotFoundError:
+        return None
+
+
 def get_node_operator_registry(w3):
     """Return ``NodeOperatorRegistry`` contract handle, or ``None`` if not deployed."""
     network_contracts = _CONTRACTS.get("fhenix_testnet", {})
@@ -74,15 +87,17 @@ def register_node(
     w3,
     config: Config,
     wallet: LocalAccount,
-    stake_wei: int,
-    cert_hash: str,
+    stake_wei: int = 0,
+    cert_hash: str = "",
+    attestation_expiry: int = 0,
 ) -> str | None:
     """Register this node on‑chain with best‑effort contract resolution.
 
     Attempts (in order):
-        1. ``NodeOperatorRegistry.register(…)`` (if deployed).
-        2. ``NodeAttestationRegistry.commit(…)`` as a fallback attestation record.
-        3. Logs a warning if neither path is viable.
+        1. ``NodeRegistry.register(…)`` (new, preferred).
+        2. ``NodeOperatorRegistry.register(…)`` (legacy).
+        3. ``NodeAttestationRegistry.commit(…)`` as a fallback attestation record.
+        4. Logs a warning if neither path is viable.
 
     Args:
         w3: A connected ``Web3`` instance.
@@ -90,20 +105,27 @@ def register_node(
         wallet: The unlocked node wallet (for signing).
         stake_wei: Native token amount to stake (in wei).
         cert_hash: The attestation certificate hash from the ICL.
+        attestation_expiry: Unix timestamp when attestation expires.
 
     Returns:
         Transaction hash (hex) on success, or ``None`` if registration was
         skipped (e.g. no contract available).
     """
-    operator_registry = get_node_operator_registry(w3)
+    # ── path 1: new NodeRegistry ──────────────────────────────────────
+    new_registry = get_new_node_registry(w3)
+    if new_registry is not None:
+        return _register_via_node_registry(
+            w3, new_registry, config, wallet, stake_wei, cert_hash, attestation_expiry
+        )
 
-    # ── path 1: NodeOperatorRegistry ──────────────────────────────────
+    # ── path 2: NodeOperatorRegistry (legacy) ───────────────────────
+    operator_registry = get_node_operator_registry(w3)
     if operator_registry is not None:
         return _register_via_operator_registry(
             w3, operator_registry, config, wallet, stake_wei, cert_hash
         )
 
-    # ── path 2: NodeAttestationRegistry.commit ────────────────────────
+    # ── path 3: NodeAttestationRegistry.commit ──────────────────────
     attestation_registry = None
     try:
         attestation_registry = get_node_registry(w3)
@@ -115,7 +137,7 @@ def register_node(
             w3, attestation_registry, config, wallet, cert_hash
         )
 
-    # ── path 3: no viable contract ────────────────────────────────────
+    # ── path 4: no viable contract ──────────────────────────────────
     print(
         "Warning: No on‑chain registration contract is available. "
         "The node will not be registered on‑chain, but the ICL may still "
@@ -126,8 +148,68 @@ def register_node(
 
 
 # ---------------------------------------------------------------------------
-# Path 1 — NodeOperatorRegistry.register()
+# Path 1 — NodeRegistry.register() (new, preferred)
 # ---------------------------------------------------------------------------
+
+
+def _register_via_node_registry(
+    w3,
+    contract,
+    config: Config,
+    wallet: LocalAccount,
+    stake_wei: int,
+    cert_hash: str,
+    attestation_expiry: int,
+) -> str:
+    print(f"  Registering via NodeRegistry … stake={stake_wei} wei")
+
+    tx = contract.functions.register(
+        config.tier,
+        _to_bytes32(cert_hash),
+        attestation_expiry,
+        config.supported_model_ids,
+    ).build_transaction(
+        {
+            "from": wallet.address,
+            "value": stake_wei,
+            "nonce": w3.eth.get_transaction_count(wallet.address),
+            "gas": 500_000,
+            "gasPrice": _estimate_gas_price(w3),
+        }
+    )
+
+    signed = wallet.sign_transaction(tx)
+    tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    _print_tx(receipt.transactionHash.hex(), "Registration tx")
+    return receipt.transactionHash.hex()
+
+
+# ---------------------------------------------------------------------------
+# Path 2 — NodeOperatorRegistry.register() (legacy)
+# ---------------------------------------------------------------------------
+
+
+def _estimate_gas_price(w3) -> int:
+    """Return current gas price with a 50% buffer to avoid base-fee rejections."""
+    base = w3.eth.gas_price
+    # Add 50% buffer; on Arbitrum Sepolia base fee can spike above gas_price
+    return int(base * 1.5)
+
+
+def _explorer_url(tx_hash: str) -> str | None:
+    """Return a human-readable block-explorer URL for Arbitrum Sepolia."""
+    if not tx_hash or not tx_hash.startswith("0x"):
+        return None
+    return f"https://sepolia.arbiscan.io/tx/{tx_hash}"
+
+
+def _print_tx(tx_hash: str, label: str = "Transaction") -> None:
+    """Pretty-print a transaction hash with explorer link."""
+    print(f"  {label:<18} : {tx_hash}")
+    url = _explorer_url(tx_hash)
+    if url:
+        print(f"  {'Explorer':<18} : {url}")
 
 
 def _register_via_operator_registry(
@@ -138,7 +220,7 @@ def _register_via_operator_registry(
     stake_wei: int,
     cert_hash: str,
 ) -> str:
-    print(f"Registering via NodeOperatorRegistry … stake={stake_wei} wei")
+    print(f"  Registering via NodeOperatorRegistry (legacy) … stake={stake_wei} wei")
 
     # Convert tier → model_tiers (uint8 list matching supported models)
     model_tiers: list[int] = [config.tier for _ in config.supported_model_ids]
@@ -155,14 +237,14 @@ def _register_via_operator_registry(
             "value": stake_wei,
             "nonce": w3.eth.get_transaction_count(wallet.address),
             "gas": 500_000,
-            "gasPrice": w3.eth.gas_price,
+            "gasPrice": _estimate_gas_price(w3),
         }
     )
 
     signed = wallet.sign_transaction(tx)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-    print(f"Registered on‑chain — tx: {receipt.transactionHash.hex()}")
+    _print_tx(receipt.transactionHash.hex(), "Registration tx")
     return receipt.transactionHash.hex()
 
 
@@ -220,14 +302,14 @@ def _register_via_attestation_commit(
             "from": wallet.address,
             "nonce": w3.eth.get_transaction_count(wallet.address),
             "gas": 300_000,
-            "gasPrice": w3.eth.gas_price,
+            "gasPrice": _estimate_gas_price(w3),
         }
     )
 
     signed_tx = wallet.sign_transaction(tx)
     tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-    print(f"Attestation committed — tx: {receipt.transactionHash.hex()}")
+    _print_tx(receipt.transactionHash.hex(), "Attestation tx")
     return receipt.transactionHash.hex()
 
 
@@ -239,12 +321,33 @@ def _register_via_attestation_commit(
 def update_heartbeat(w3, config: Config, wallet: LocalAccount) -> None:
     """Send an on‑chain heartbeat to keep the node active.
 
-    If ``NodeOperatorRegistry`` is deployed, calls ``updateHeartbeat()``.
-    Otherwise logs a warning — the ICL will still track liveness via its
-    own heartbeat endpoint (Phase 3+).
+    If ``NodeRegistry`` is deployed, calls ``heartbeat()``.
+    Otherwise falls back to ``NodeOperatorRegistry.updateHeartbeat()``.
+    If neither is available, logs a warning — the ICL will still track
+    liveness via its own heartbeat endpoint (Phase 3+).
 
     Never raises; failures are logged and skipped.
     """
+    # Try new NodeRegistry first
+    new_registry = get_new_node_registry(w3)
+    if new_registry is not None:
+        try:
+            tx = new_registry.functions.heartbeat().build_transaction(
+                {
+                    "from": wallet.address,
+                    "nonce": w3.eth.get_transaction_count(wallet.address),
+                    "gas": 100_000,
+                    "gasPrice": _estimate_gas_price(w3),
+                }
+            )
+            signed = wallet.sign_transaction(tx)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+            _print_tx(tx_hash.hex(), "Heartbeat tx")
+        except Exception as exc:
+            print(f"Heartbeat failed: {exc}", file=sys.stderr)
+        return
+
+    # Fallback to legacy NodeOperatorRegistry
     operator_registry = get_node_operator_registry(w3)
     if operator_registry is not None:
         try:
@@ -253,17 +356,17 @@ def update_heartbeat(w3, config: Config, wallet: LocalAccount) -> None:
                     "from": wallet.address,
                     "nonce": w3.eth.get_transaction_count(wallet.address),
                     "gas": 100_000,
-                    "gasPrice": w3.eth.gas_price,
+                    "gasPrice": _estimate_gas_price(w3),
                 }
             )
             signed = wallet.sign_transaction(tx)
             tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-            print(f"Heartbeat sent — tx: {tx_hash.hex()}")
+            _print_tx(tx_hash.hex(), "Heartbeat tx")
         except Exception as exc:
             print(f"Heartbeat failed: {exc}", file=sys.stderr)
         return
 
-    print("Heartbeat skipped: NodeOperatorRegistry not deployed", file=sys.stderr)
+    print("Heartbeat skipped: No on‑chain registry deployed", file=sys.stderr)
 
 
 def update_attestation(
@@ -334,7 +437,7 @@ def post_commitment_seal(
             "from": wallet.address,
             "nonce": w3.eth.get_transaction_count(wallet.address),
             "gas": 200_000,
-            "gasPrice": w3.eth.gas_price,
+            "gasPrice": _estimate_gas_price(w3),
         })
         signed = wallet.sign_transaction(tx)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
@@ -377,7 +480,7 @@ def post_commitment_reveal(
             "from": wallet.address,
             "nonce": w3.eth.get_transaction_count(wallet.address),
             "gas": 200_000,
-            "gasPrice": w3.eth.gas_price,
+            "gasPrice": _estimate_gas_price(w3),
         })
         signed = wallet.sign_transaction(tx)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
@@ -434,12 +537,12 @@ def store_output_key(
             "from": wallet.address,
             "nonce": w3.eth.get_transaction_count(wallet.address),
             "gas": 300_000,
-            "gasPrice": w3.eth.gas_price,
+            "gasPrice": _estimate_gas_price(w3),
         })
         signed = wallet.sign_transaction(tx)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-        print(f"Output key stored on‑chain — tx: {receipt.transactionHash.hex()}")
+        _print_tx(receipt.transactionHash.hex(), "Output-key tx")
         return {"status": "stored", "tx_hash": receipt.transactionHash.hex()}
     except Exception as exc:
         print(f"Output key storage failed: {exc}", file=sys.stderr)

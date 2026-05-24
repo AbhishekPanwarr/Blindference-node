@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import os
 import subprocess
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 import aiohttp
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
@@ -54,6 +55,49 @@ class CoFHEClient(ABC):
     @abstractmethod
     def encrypt(self, value: int) -> int:
         """CoFHE‑encrypt *value* and return the ``uint256`` handle."""
+
+    def decrypt_prompt_key(self, high_handle: int, low_handle: int) -> tuple[int, int, str]:
+        """Decrypt a 256‑bit AES key split into two ``uint128`` CoFHE handles.
+
+        Returns:
+            ``(high_plaintext, low_plaintext, permit_hash)``
+        """
+        high = self.decrypt(high_handle)
+        low = self.decrypt(low_handle)
+        return high, low, ""
+
+    def encrypt_uint128_values(self, values: list[int]) -> list[dict[str, Any]]:
+        """CoFHE‑encrypt a list of ``uint128`` values.
+
+        Returns:
+            A list of encrypted input dicts, each with ``ctHash``,
+            ``securityZone``, ``utype``, and ``signature`` keys.
+        """
+        results: list[dict[str, Any]] = []
+        for value in values:
+            handle = self.encrypt(value)
+            results.append({
+                "ctHash": str(handle),
+                "securityZone": 0,
+                "utype": 6,  # Uint128
+                "signature": "0x",
+            })
+        return results
+
+    def store_prompt_key(
+        self,
+        task_id: str,
+        prompt_key_store_address: str,
+        encrypted_high_input: dict[str, Any],
+        encrypted_low_input: dict[str, Any],
+        allowed_nodes: list[str],
+    ) -> str:
+        """Store an encrypted key on-chain via PromptKeyStore.storeKey.
+
+        Default implementation returns empty string (no-op for backends
+        that don't support on-chain storage).
+        """
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -281,33 +325,135 @@ def _unseal(sealed_bytes: bytes, sealing_private_key: object) -> int:
 
 
 class CoFHEBridgeClient(CoFHEClient):
-    """CoFHE client that spawns a Node.js TypeScript bridge.
+    """CoFHE client that spawns a Node.js bridge via JSON stdin/stdout.
 
-    Uses ``@cofhe/sdk/node`` + viem to call the Fhenix CoFHE coprocessor
-    through the Arbitrum Sepolia RPC.  The *rpc_url* must point to an
-    Arbitrum Sepolia RPC endpoint (e.g. Alchemy / Infura).
+    Uses ``cofhe_bridge.mjs`` (ESM, no ts-node) with the
+    ``@cofhe/sdk/node`` + viem stack.  The bridge creates self permits
+    internally, stores them in a filesystem localStorage shim, and
+    communicates with the parent process via JSON messages on stdin/stdout.
     """
 
     def __init__(self, wallet_private_key: str, rpc_url: str) -> None:
         self._pk = wallet_private_key
         self._rpc_url = rpc_url
-        self._scripts_dir = os.path.join(os.path.dirname(__file__), "..", "scripts")
+        self._scripts_dir = os.path.join(os.path.dirname(__file__), "scripts")
 
-    def _run_bridge(self, script: str, *args: str) -> int:
-        cmd = ["npx", "ts-node", os.path.join(self._scripts_dir, script), *args, self._rpc_url]
-        env = {**os.environ, "BLF_PRIVATE_KEY": self._pk}
+    def _validate_rpc(self) -> None:
+        if "YOUR_KEY" in self._rpc_url or "demo" in self._rpc_url:
+            raise CoFHEAPIError(
+                f"Invalid CoFHE RPC URL: {self._rpc_url}\n"
+                "The default Alchemy key is a placeholder. Set a real key:\n"
+                "  export BLF_COFHE_ENDPOINT='https://arb-sepolia.g.alchemy.com/v2/YOUR_REAL_KEY'\n"
+                "Or copy the ICL's RPC from its .env file."
+            )
+
+    def _run_bridge_json(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Spawn ``cofhe_bridge.mjs``, send *payload* as JSON on stdin, read JSON result from stdout."""
+        self._validate_rpc()
+
+        bridge_path = os.path.join(self._scripts_dir, "cofhe_bridge.mjs")
+        if not os.path.exists(bridge_path):
+            raise CoFHEAPIError(f"Bridge script not found: {bridge_path}")
+
+        env = {
+            **os.environ,
+            "BLF_PRIVATE_KEY": self._pk,
+            "NODE_NO_WARNINGS": "1",
+        }
+
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30, env=env,
+            ["node", bridge_path],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
         )
+
         if result.returncode != 0:
-            raise CoFHEAPIError(f"Bridge {script} failed: {result.stderr.strip()}")
-        return int(result.stdout.strip(), 0)
+            stderr = result.stderr.strip()
+            # If stdout still has a JSON error object, prefer it for the message
+            if result.stdout.strip():
+                try:
+                    parsed = json.loads(result.stdout.strip().splitlines()[-1])
+                    if not parsed.get("ok"):
+                        raise CoFHEAPIError(f"CoFHE bridge error: {parsed.get('error', stderr)}")
+                except (json.JSONDecodeError, KeyError):
+                    pass
+            raise CoFHEAPIError(f"CoFHE bridge failed: {stderr}")
+
+        # Bridge may log to stdout before the final JSON line; take the last line
+        lines = result.stdout.strip().splitlines()
+        if not lines:
+            raise CoFHEAPIError("CoFHE bridge produced no output")
+
+        try:
+            parsed = json.loads(lines[-1])
+        except json.JSONDecodeError as exc:
+            raise CoFHEAPIError(f"CoFHE bridge returned invalid JSON: {lines[-1]}") from exc
+
+        if not parsed.get("ok"):
+            raise CoFHEAPIError(f"CoFHE bridge error: {parsed.get('error', 'unknown')}")
+
+        return parsed
 
     def decrypt(self, ct_handle: int) -> int:
-        return self._run_bridge("cofhe_decrypt.ts", hex(ct_handle))
+        # Fallback: use decrypt_prompt_key with a single handle (high) and ignore low
+        high, _low, _permit_hash = self.decrypt_prompt_key(ct_handle, 0)
+        return high
 
     def encrypt(self, value: int) -> int:
-        return self._run_bridge("cofhe_encrypt.ts", hex(value))
+        results = self.encrypt_uint128_values([value])
+        if not results:
+            raise CoFHEAPIError("CoFHE encrypt returned no results")
+        return int(results[0]["ctHash"])
+
+    def decrypt_prompt_key(self, high_handle: int, low_handle: int) -> tuple[int, int, str]:
+        payload = {
+            "action": "decrypt_prompt_key",
+            "privateKey": self._pk,
+            "rpcUrl": self._rpc_url,
+            "highHandle": hex(high_handle),
+            "lowHandle": hex(low_handle),
+        }
+        result = self._run_bridge_json(payload)
+        return int(result["high"]), int(result["low"]), str(result.get("permitHash", ""))
+
+    def encrypt_uint128_values(self, values: list[int]) -> list[dict[str, Any]]:
+        payload = {
+            "action": "encrypt_uint128",
+            "privateKey": self._pk,
+            "rpcUrl": self._rpc_url,
+            "values": [str(v) for v in values],
+        }
+        result = self._run_bridge_json(payload)
+        return result.get("results", [])
+
+    def store_prompt_key(
+        self,
+        task_id: str,
+        prompt_key_store_address: str,
+        encrypted_high_input: dict[str, Any],
+        encrypted_low_input: dict[str, Any],
+        allowed_nodes: list[str],
+    ) -> str:
+        """Store an encrypted key on-chain via PromptKeyStore.storeKey.
+
+        The node wallet (which created the ciphertexts) calls this so
+        the contract can verify the signer and grant ACL access.
+        """
+        payload = {
+            "action": "store_prompt_key",
+            "privateKey": self._pk,
+            "rpcUrl": self._rpc_url,
+            "taskId": task_id,
+            "promptKeyStoreAddress": prompt_key_store_address,
+            "encryptedHighInput": encrypted_high_input,
+            "encryptedLowInput": encrypted_low_input,
+            "allowedNodes": allowed_nodes,
+        }
+        result = self._run_bridge_json(payload)
+        return str(result.get("txHash", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -323,24 +469,32 @@ def generate_output_key() -> bytes:
 def encrypt_output_blob(text: str, key: bytes) -> bytes:
     """Encrypt *text* with AES-256-GCM.
 
-    Returns:
-        ``iv (12) || ciphertext + tag (16)``
+    Returns packed blob matching the Blindference frontend format:
+        ``iv (16) || authTag (16) || ciphertext``
     """
     aes = AESGCM(key)
-    iv = os.urandom(12)
-    ct = aes.encrypt(iv, text.encode("utf-8"), None)
-    return iv + ct
+    iv = os.urandom(16)
+    ct_with_tag = aes.encrypt(iv, text.encode("utf-8"), None)
+    # AESGCM returns ciphertext || tag(16)
+    ciphertext = ct_with_tag[:-16]
+    auth_tag = ct_with_tag[-16:]
+    return iv + auth_tag + ciphertext
 
 
 def decrypt_prompt_blob(blob: bytes, key: bytes) -> str:
     """Decrypt an AES-256-GCM blob.
 
-    Blob format: ``iv (12) || ciphertext || tag (16)``.
+    Blob format (Blindference frontend):
+        ``iv (16) || authTag (16) || ciphertext``
     """
-    iv = blob[:12]
-    ct = blob[12:]
+    if len(blob) < 32:
+        raise ValueError(f"Blob too short ({len(blob)} bytes) — need at least 32 for iv+tag")
+    iv = blob[:16]
+    auth_tag = blob[16:32]
+    ciphertext = blob[32:]
     aes = AESGCM(key)
-    plaintext = aes.decrypt(iv, ct, None)
+    # AESGCM expects ciphertext || tag
+    plaintext = aes.decrypt(iv, ciphertext + auth_tag, None)
     return plaintext.decode("utf-8")
 
 

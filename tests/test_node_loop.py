@@ -78,7 +78,7 @@ async def test_heartbeat_loop_runs_and_stops():
 
     icl = ICLClient(config.icl_endpoint, wallet)
     with patch("blindference_node.node_loop.update_heartbeat") as mock_hb, \
-         patch.object(ICLClient, "send_heartbeat", AsyncMock(return_value={})):
+         patch.object(ICLClient, "send_heartbeat", AsyncMock(return_value={})) as mock_icl_hb:
         task = asyncio.create_task(heartbeat_loop(shutdown, config, w3, wallet, icl))
 
         # Let it fire once
@@ -86,7 +86,9 @@ async def test_heartbeat_loop_runs_and_stops():
         shutdown.set()
         await task
 
-        assert mock_hb.call_count >= 1
+        # ICL heartbeat fires every 60s (free REST call)
+        assert mock_icl_hb.call_count >= 1
+        # On-chain heartbeat only every 10 days, so may not fire in 0.1s
 
 
 @pytest.mark.asyncio

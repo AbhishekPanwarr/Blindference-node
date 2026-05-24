@@ -16,6 +16,10 @@ class ICLClientError(Exception):
     """Raised when an ICL request fails."""
 
 
+class ICLNodeUnknownError(ICLClientError):
+    """Raised when the ICL returns 401/404 for this node, indicating a reset."""
+
+
 class ICLClient:
     """Async HTTP client for the ICL internal API.
 
@@ -78,6 +82,10 @@ class ICLClient:
                         if resp.status < 400:
                             return await resp.json()  # type: ignore[no-any-return]
                         error_text = await resp.text()
+                        if resp.status in (401, 404):
+                            raise ICLNodeUnknownError(
+                                f"ICL {method} {path} returned {resp.status}: {error_text}"
+                            )
                         raise ICLClientError(
                             f"ICL {method} {path} returned {resp.status}: {error_text}"
                         )
@@ -109,6 +117,7 @@ class ICLClient:
         quote: bytes,
         runtime_hash: bytes,
         challenge_id: str,
+        supported_model_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """Submit an attestation quote to the ICL for verification.
 
@@ -117,13 +126,15 @@ class ICLClient:
         Returns:
             ``{"certHash": str, "expiry": int, "tier": int}``
         """
-        body = {
+        body: dict[str, Any] = {
             "nodeAddress": self.address,
             "backendType": backend_type,
             "quote": quote.hex(),
             "runtimeHash": runtime_hash.hex(),
             "challengeId": challenge_id,
         }
+        if supported_model_ids:
+            body["supportedModelIds"] = supported_model_ids
         return await self._request("POST", "/internal/attestation/verify", body)
 
     # ------------------------------------------------------------------
@@ -140,10 +151,22 @@ class ICLClient:
             ``jobId``, ``role``, ``modelId``, ``promptCid``, ``deadline``,
             and ``insuranceOptIn``.  Returns an empty list when there are
             no pending jobs.
+
+        Raises:
+            ICLNodeUnknownError: if the ICL responds 401/404, meaning the
+            node is no longer known (e.g. ICL was restarted and lost state).
         """
-        result = await self._request(
-            "GET", f"/internal/assignments/{self.address}"
-        )
+        try:
+            result = await self._request(
+                "GET", f"/internal/assignments/{self.address}"
+            )
+        except ICLClientError as exc:
+            msg = str(exc)
+            if "returned 401" in msg or "returned 404" in msg:
+                raise ICLNodeUnknownError(
+                    f"Node {self.address} unknown to ICL — needs re-attestation"
+                ) from exc
+            raise
         return result.get("assignments", [])
 
     async def claim_task(self, job_id: str) -> dict[str, Any]:
@@ -169,7 +192,10 @@ class ICLClient:
         job_id: str,
         output_cid: str,
         commitment: bytes,
-        output_key_enc: str,
+        encrypted_output_key_high: int | None = None,
+        encrypted_output_key_low: int | None = None,
+        encrypted_output_key_inputs: dict[str, Any] | None = None,
+        output_key_store_tx: str | None = None,
     ) -> dict[str, Any]:
         """Submit leader inference result to the ICL.
 
@@ -179,14 +205,28 @@ class ICLClient:
             job_id: The job identifier.
             output_cid: IPFS CID of the encrypted output blob.
             commitment: 32‑byte commitment ``C`` per the whitepaper.
-            output_key_enc: CoFHE-encrypted output key handle string.
+            encrypted_output_key_high: CoFHE handle for the high 128 bits of the output AES key.
+            encrypted_output_key_low: CoFHE handle for the low 128 bits of the output AES key.
+            encrypted_output_key_inputs: Full encrypted input dicts (with ctHash,
+                securityZone, utype, signature) for both halves under keys
+                ``"high"`` and ``"low"``.  The ICL uses these to call
+                ``PromptKeyStore.storeOutputKey()`` on-chain.
+            output_key_store_tx: Transaction hash if the node already stored the
+                output key on-chain via ``PromptKeyStore.storeKey``.
         """
-        body = {
+        body: dict[str, Any] = {
             "jobId": job_id,
-            "outputCid": output_cid,
-            "outputCommitment": commitment.hex(),
-            "outputKeyEncrypted": output_key_enc,
+            "output_cid": output_cid,
+            "commitment_hash": commitment.hex(),
         }
+        if encrypted_output_key_high is not None:
+            body["encrypted_output_key_high"] = str(encrypted_output_key_high)
+        if encrypted_output_key_low is not None:
+            body["encrypted_output_key_low"] = str(encrypted_output_key_low)
+        if encrypted_output_key_inputs is not None:
+            body["encrypted_output_key_inputs"] = encrypted_output_key_inputs
+        if output_key_store_tx:
+            body["output_key_store_tx"] = output_key_store_tx
         return await self._request("POST", "/internal/task/result", body)
 
     async def submit_verification(
@@ -208,9 +248,10 @@ class ICLClient:
         """
         body = {
             "jobId": job_id,
-            "verifierCommitment": commitment.hex(),
+            "verifier_address": self.address,
+            "commitment_hash": commitment.hex(),
             "verdict": verdict,
-            "confidenceScore": confidence,
+            "confidence": confidence,
         }
         return await self._request("POST", "/internal/task/verify", body)
 
