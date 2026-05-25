@@ -1014,3 +1014,59 @@ def jobs_claim() -> None:
     """Claim pending rewards (no-op — rewards are auto-distributed)."""
     click.echo("Rewards are automatically distributed on job completion.")
     click.echo("No manual claim action is needed.")
+
+
+@jobs_group.command("earnings")
+def jobs_earnings() -> None:
+    """Show total BLIND earned across all completed jobs."""
+    import urllib.request
+    import urllib.error
+
+    config = load_config()
+    if not config.node_address:
+        click.echo("Node not initialised. Run `blindference-node init` first.")
+        raise SystemExit(1)
+
+    url = f"{config.payment_service_url}/v1/nodes/{config.node_address}/earnings"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        click.echo(f"Payment Service unreachable: {exc.reason}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Failed to fetch earnings: {exc}", err=True)
+        raise SystemExit(1)
+
+    total = data.get("total_blind_earned", 0.0)
+    count = data.get("jobs_count", 0)
+    click.echo(f"Total BLIND earned: {total} BLIND (from {count} completed jobs)")
+
+
+# ---------------------------------------------------------------------------
+# balance
+# ---------------------------------------------------------------------------
+
+
+@main.command("balance")
+def node_balance() -> None:
+    """Show current BLIND token balance."""
+    from web3 import Web3, HTTPProvider
+
+    config = load_config()
+    if not config.node_address:
+        click.echo("Node not initialised. Run `blindference-node init` first.")
+        raise SystemExit(1)
+
+    try:
+        w3 = Web3(HTTPProvider(config.rpc_url))
+        with open(os.path.join(os.path.dirname(__file__), "contracts", "abis", "BLIND.json")) as f:
+            blind_abi = json.load(f)["abi"]
+        blind_contract = w3.eth.contract(address=config.blind_token_address, abi=blind_abi)
+        raw_balance = blind_contract.functions.balanceOf(config.node_address).call()
+        # BLIND has 18 decimals
+        balance_blind = raw_balance / 10**18
+        click.echo(f"BLIND balance: {balance_blind} BLIND")
+    except Exception as exc:
+        click.echo(f"Failed to fetch balance: {exc}", err=True)
+        raise SystemExit(1)

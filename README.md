@@ -138,6 +138,9 @@ The daemon starts four concurrent loops:
 | `models test` | Test a specific backend with a prompt | ✅ Ready |
 | `models add` | Register a custom backend from a dotted Python path | ✅ Ready |
 | `test-determinism` | Run GPU determinism self-test with vLLM or cloud APIs | ✅ Ready |
+| `jobs list` | List completed jobs and BLIND earnings | ✅ Ready |
+| `jobs earnings` | Total BLIND earned across all completed jobs | ✅ Ready |
+| `balance` | Current BLIND token balance | ✅ Ready |
 
 ---
 

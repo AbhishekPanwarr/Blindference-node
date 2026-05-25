@@ -41,6 +41,7 @@ class Config(BaseModel):
     cofhe_chain_id: int = 421614
     skip_output_key_storage: bool = False
     custom_backends: list[str] = Field(default_factory=list)
+    blind_token_address: str = "0x232D5470DaaC7AD552a42d876aDEF1f778033cE0"
 
 
 def _env_override(key: str, value: Any) -> Any:
