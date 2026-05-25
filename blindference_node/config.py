@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 _ENV_CONFIG_DIR = os.environ.get("BLF_CONFIG_DIR", "")
-DEFAULT_CONFIG_DIR = os.path.expanduser(_ENV_CONFIG_DIR) if _ENV_CONFIG_DIR else os.path.expanduser("~/.blindference")
+DEFAULT_CONFIG_DIR = os.path.expanduser(_ENV_CONFIG_DIR) if _ENV_CONFIG_DIR else os.getcwd()
 DEFAULT_CONFIG_PATH = os.path.join(DEFAULT_CONFIG_DIR, "config.json")
 
 
@@ -71,7 +71,7 @@ def load_config(path: str | None = None) -> Config:
     """Load configuration from a JSON file, applying environment overrides.
 
     Args:
-        path: Path to the config file. Defaults to ``~/.blindference/config.json``.
+        path: Path to the config file. Defaults to ``./config.json`` in the current working directory.
 
     Returns:
         A ``Config`` instance.
@@ -107,7 +107,7 @@ def save_config(config: Config, path: str | None = None) -> None:
 
     Args:
         config: The ``Config`` instance to save.
-        path: Target path. Defaults to ``~/.blindference/config.json``.
+        path: Target path. Defaults to ``./config.json`` in the current working directory.
     """
     file_path = path or DEFAULT_CONFIG_PATH
     os.makedirs(os.path.dirname(file_path), exist_ok=True)

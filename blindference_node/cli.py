@@ -34,7 +34,6 @@ def _load_env_file() -> None:
 
     paths = [
         _os.path.join(_os.getcwd(), ".env"),
-        _os.path.expanduser("~/.blindference/.env"),
     ]
 
     try:
@@ -232,7 +231,7 @@ def init() -> None:
     click.echo()
 
     # --- Wallet ---------------------------------------------------------
-    keystore_path = os.path.expanduser("~/.blindference/keystore.json")
+    keystore_path = os.path.join(os.getcwd(), "keystore.json")
 
     env_key = os.environ.get("BLF_PRIVATE_KEY")
     env_password = os.environ.get("BLF_KEY_PASSWORD")
@@ -282,8 +281,8 @@ def init() -> None:
     else:
         click.echo("\n  NOTE: No GPU detected or insufficient VRAM, and no cloud API keys set.")
         click.echo("  This node can still participate via cloud API inference:")
-        click.echo("    • Groq   — set GROQ_API_KEY  in ~/.blindference/.env")
-        click.echo("    • Gemini — set GOOGLE_API_KEY in ~/.blindference/.env")
+        click.echo("    • Groq   — set GROQ_API_KEY  in .env")
+        click.echo("    • Gemini — set GOOGLE_API_KEY in .env")
         click.echo("  Add one or both keys, then run `blindference-node run`.")
 
     # --- Determinism self-test ------------------------------------------
@@ -307,7 +306,7 @@ def init() -> None:
         supported_model_ids=supported_models,
     )
     save_config(config)
-    click.echo("\nConfiguration saved to ~/.blindference/config.json")
+    click.echo("\nConfiguration saved to ./config.json")
 
     # --- Summary --------------------------------------------------------
     click.echo()
@@ -320,8 +319,8 @@ def init() -> None:
     click.echo("  NEXT STEPS")
     click.echo("  ──────────────────────────────────────────────────────────")
     click.echo("  1. Set cloud API keys (if no GPU):")
-    click.echo("     echo 'GROQ_API_KEY=gsk_...' > ~/.blindference/.env")
-    click.echo("     echo 'GOOGLE_API_KEY=AI...' >> ~/.blindference/.env")
+    click.echo("     echo 'GROQ_API_KEY=gsk_...' > .env")
+    click.echo("     echo 'GOOGLE_API_KEY=AI...' >> .env")
     click.echo()
     click.echo("  2. Run attestation:")
     click.echo("     blindference-node attest")
@@ -546,7 +545,7 @@ def attest(mock: bool, tee_key: str | None) -> None:
     config.attestation_expiry = expiry
     config.tier = final_tier
     save_config(config)
-    click.echo("\nAttestation saved to ~/.blindference/config.json")
+    click.echo("\nAttestation saved to ./config.json")
 
     click.echo()
     click.echo("=" * 60)
@@ -773,7 +772,7 @@ def models_add(dotted_path: str) -> None:
         blindference-node models add my_package.backends:MyBackend
 
     The class must inherit ``ModelBackend`` and implement the four abstract
-    methods.  The path is persisted in ``~/.blindference/config.json``
+    methods.  The path is persisted in ``./config.json``
     (``custom_backends`` list) and loaded automatically on the next
     ``blindference-node run``.
     """
