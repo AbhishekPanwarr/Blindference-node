@@ -14,7 +14,7 @@ from blindference_node.config import Config, load_config, save_config
 from blindference_node.execution import get_registry, set_registry, run_determinism_self_test
 from blindference_node.icl_client import ICLClient
 from blindference_node.node_loop import start_daemon
-from blindference_node.registry import register_node, get_node_operator_registry, is_node_registered
+from blindference_node.registry import register_node, get_node_operator_registry, is_node_registered, get_stake_info
 from blindference_node.utils import detect_gpu
 from blindference_node.wallet import generate_wallet, import_wallet, load_wallet
 
@@ -649,6 +649,17 @@ def status() -> None:
     now = int(time.time())
     remaining = config.attestation_expiry - now
 
+    # Query on-chain stake (source of truth over local config)
+    on_chain_stake_wei = None
+    if config.fhenix_rpc and config.node_address:
+        try:
+            w3 = Web3(Web3.HTTPProvider(config.fhenix_rpc))
+            stake_info = get_stake_info(w3, config.node_address)
+            if stake_info:
+                on_chain_stake_wei = stake_info.get("staked")
+        except Exception:
+            pass  # Fallback to local config below
+
     click.echo("=" * 60)
     click.echo("  Node Status")
     click.echo("=" * 60)
@@ -660,7 +671,10 @@ def status() -> None:
     click.echo(f"  ICL endpoint   : {config.icl_endpoint}")
     click.echo(f"  Fhenix RPC     : {config.fhenix_rpc}")
     click.echo(f"  IPFS gateway   : {config.ipfs_gateway}")
-    click.echo(f"  Stake (wei)    : {config.stake_amount_wei}")
+    if on_chain_stake_wei is not None:
+        click.echo(f"  Stake (wei)    : {on_chain_stake_wei} (on-chain)")
+    else:
+        click.echo(f"  Stake (wei)    : {config.stake_amount_wei} (local config)")
     click.echo(f"  CoFHE mode     : {config.cofhe_mode}")
     click.echo("=" * 60)
 

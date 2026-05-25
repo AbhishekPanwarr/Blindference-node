@@ -202,6 +202,8 @@ def _register_via_node_registry(
     signed = wallet.sign_transaction(tx)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    if not _require_receipt_success(receipt, "Registration tx"):
+        return None
     _print_tx(receipt.transactionHash.hex(), "Registration tx")
     return receipt.transactionHash.hex()
 
@@ -231,6 +233,27 @@ def _print_tx(tx_hash: str, label: str = "Transaction") -> None:
     url = _explorer_url(tx_hash)
     if url:
         print(f"  {'Explorer':<18} : {url}")
+
+
+def _require_receipt_success(receipt, label: str = "Transaction") -> bool:
+    """Check that a transaction receipt indicates success (status == 1).
+
+    Arbitrum (and EVM) uses status 1 for success, 0 for revert.
+    Prints a clear error message on failure and returns False.
+    """
+    status = getattr(receipt, "status", None)
+    # Web3.py receipt.status is an int (1 = success, 0 = failure)
+    if status != 1:
+        tx_hash = getattr(receipt, "transactionHash", "unknown")
+        if hasattr(tx_hash, "hex"):
+            tx_hash = tx_hash.hex()
+        print(
+            f"  ERROR: {label} reverted on-chain (status={status}). "
+            f"Tx: {tx_hash}",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def _register_via_operator_registry(
@@ -265,6 +288,8 @@ def _register_via_operator_registry(
     signed = wallet.sign_transaction(tx)
     tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    if not _require_receipt_success(receipt, "Registration tx"):
+        return None
     _print_tx(receipt.transactionHash.hex(), "Registration tx")
     return receipt.transactionHash.hex()
 
@@ -330,12 +355,14 @@ def _register_via_attestation_commit(
     signed_tx = wallet.sign_transaction(tx)
     tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
     receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+    if not _require_receipt_success(receipt, "Attestation tx"):
+        return None
     _print_tx(receipt.transactionHash.hex(), "Attestation tx")
     return receipt.transactionHash.hex()
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 — Heartbeat & Attestation updates
+# Phase 3 — Heartbeat & Attestation updates
 # ---------------------------------------------------------------------------
 
 
@@ -363,7 +390,10 @@ def update_heartbeat(w3, config: Config, wallet: LocalAccount) -> None:
             )
             signed = wallet.sign_transaction(tx)
             tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-            _print_tx(tx_hash.hex(), "Heartbeat tx")
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+            if not _require_receipt_success(receipt, "Heartbeat tx"):
+                return
+            _print_tx(receipt.transactionHash.hex(), "Heartbeat tx")
         except Exception as exc:
             print(f"Heartbeat failed: {exc}", file=sys.stderr)
         return
@@ -382,35 +412,54 @@ def update_heartbeat(w3, config: Config, wallet: LocalAccount) -> None:
             )
             signed = wallet.sign_transaction(tx)
             tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-            _print_tx(tx_hash.hex(), "Heartbeat tx")
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+            if not _require_receipt_success(receipt, "Heartbeat tx"):
+                return
+            _print_tx(receipt.transactionHash.hex(), "Heartbeat tx")
         except Exception as exc:
             print(f"Heartbeat failed: {exc}", file=sys.stderr)
         return
 
-    print("Heartbeat skipped: No on‑chain registry deployed", file=sys.stderr)
-
 
 def update_attestation(
     w3,
-    config: Config,
+    config,
     wallet: LocalAccount,
     cert_hash: str,
-    expiry: int,
-) -> None:
-    """Record a renewed attestation certificate on‑chain.
-
-    Currently a stub — logs the new certificate details.  A future
-    implementation will call ``NodeAttestationRegistry.commit()`` or
-    the equivalent on the operator registry.
-    """
-    print(
-        f"Attestation update on‑chain: certHash={cert_hash}, expiry={expiry}",
-        file=sys.stderr,
-    )
+    attestation_expiry: int,
+) -> str | None:
+    """Update on-chain attestation via NodeRegistry.updateAttestation()."""
+    new_registry = get_new_node_registry(w3)
+    if new_registry is None:
+        return None
+    try:
+        tx = new_registry.functions.updateAttestation(
+            wallet.address,
+            w3.to_bytes(hexstr=cert_hash) if cert_hash.startswith("0x") else w3.to_bytes(hexstr="0x" + cert_hash),
+            config.tier,
+            attestation_expiry,
+        ).build_transaction(
+            {
+                "from": wallet.address,
+                "nonce": w3.eth.get_transaction_count(wallet.address),
+                "gas": 200_000,
+                "gasPrice": _estimate_gas_price(w3),
+            }
+        )
+        signed = wallet.sign_transaction(tx)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        if not _require_receipt_success(receipt, "Attestation update tx"):
+            return None
+        _print_tx(receipt.transactionHash.hex(), "Attestation update tx")
+        return receipt.transactionHash.hex()
+    except Exception as exc:
+        print(f"Attestation update failed: {exc}", file=sys.stderr)
+        return None
 
 
 # ---------------------------------------------------------------------------
-# Phase 4 — Commitment posting (on‑chain, opt‑in)
+# Phase 4 — Output key storage & Commitment posting (on‑chain, opt‑in)
 # ---------------------------------------------------------------------------
 
 
@@ -463,6 +512,8 @@ def post_commitment_seal(
         signed = wallet.sign_transaction(tx)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        if not _require_receipt_success(receipt, "Commitment seal tx"):
+            return None
         return receipt.transactionHash.hex()
     except Exception as exc:
         print(f"Commitment seal failed: {exc}", file=sys.stderr)
@@ -506,6 +557,8 @@ def post_commitment_reveal(
         signed = wallet.sign_transaction(tx)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        if not _require_receipt_success(receipt, "Commitment reveal tx"):
+            return None
         return receipt.transactionHash.hex()
     except Exception as exc:
         print(f"Commitment reveal failed: {exc}", file=sys.stderr)
@@ -563,6 +616,8 @@ def store_output_key(
         signed = wallet.sign_transaction(tx)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        if not _require_receipt_success(receipt, "Output-key tx"):
+            return None
         _print_tx(receipt.transactionHash.hex(), "Output-key tx")
         return {"status": "stored", "tx_hash": receipt.transactionHash.hex()}
     except Exception as exc:
@@ -623,6 +678,8 @@ def stake_blind(w3, wallet: LocalAccount, amount_wei: int) -> str | None:
         signed = wallet.sign_transaction(tx)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        if not _require_receipt_success(receipt, "Stake tx"):
+            return None
         _print_tx(receipt.transactionHash.hex(), "Stake tx")
         return receipt.transactionHash.hex()
     except Exception as exc:
@@ -650,6 +707,8 @@ def approve_blind(w3, wallet: LocalAccount, amount_wei: int) -> str | None:
         signed = wallet.sign_transaction(tx)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        if not _require_receipt_success(receipt, "Approve tx"):
+            return None
         _print_tx(receipt.transactionHash.hex(), "Approve tx")
         return receipt.transactionHash.hex()
     except Exception as exc:
@@ -676,6 +735,8 @@ def initiate_unstake(w3, wallet: LocalAccount) -> str | None:
         signed = wallet.sign_transaction(tx)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        if not _require_receipt_success(receipt, "Unstake-init tx"):
+            return None
         _print_tx(receipt.transactionHash.hex(), "Unstake-init tx")
         return receipt.transactionHash.hex()
     except Exception as exc:
@@ -702,6 +763,8 @@ def complete_unstake(w3, wallet: LocalAccount) -> str | None:
         signed = wallet.sign_transaction(tx)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        if not _require_receipt_success(receipt, "Unstake-complete tx"):
+            return None
         _print_tx(receipt.transactionHash.hex(), "Unstake-complete tx")
         return receipt.transactionHash.hex()
     except Exception as exc:

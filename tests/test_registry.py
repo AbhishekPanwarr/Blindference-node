@@ -41,7 +41,8 @@ def mock_w3():
     w3.eth.gas_price = 20_000_000_000
     w3.eth.send_raw_transaction.return_value = b"\x01" * 32
     w3.eth.wait_for_transaction_receipt.return_value = MagicMock(
-        transactionHash=b"\x02" * 32
+        transactionHash=b"\x02" * 32,
+        status=1,
     )
     return w3
 
