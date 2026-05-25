@@ -25,6 +25,7 @@ class Config(BaseModel):
     supported_model_ids: list[str] = Field(default_factory=list)
     attestation_backend: str = "mock"
     icl_endpoint: str = "https://icl.blindference.xyz"
+    payment_service_url: str = "http://127.0.0.1:8001"
     rpc_url: str = ""
     ipfs_gateway: str = "https://node.lighthouse.storage"
     model_cache_dir: str = os.path.join(DEFAULT_CONFIG_DIR, "models")

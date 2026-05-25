@@ -82,6 +82,21 @@ blindference-node status
 
 Displays node address, tier, stake, attestation validity, and recent job history.
 
+## Viewing Jobs & Earnings
+
+```bash
+blindference-node jobs list --limit 20
+```
+
+Queries the Payment Service for your completed jobs and prints a rich table:
+
+- **Role**: `leader` or `verifier`
+- **Status**: `COMPLETED`, `FAILED`, `RUNNING`
+- **Earned**: BLIND tokens earned per job (60% for leader, 20% each verifier)
+- **Totals**: Total jobs completed and total BLIND earned
+
+Rewards are automatically distributed by the Payment Service when a job completes successfully. No manual claiming is required.
+
 ## Testing Determinism
 
 Verify that your GPU produces byte‑identical outputs:

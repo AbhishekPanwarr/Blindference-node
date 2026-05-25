@@ -2,9 +2,39 @@
 
 This document tracks major releases and architectural changes to the Blindference Node runtime.
 
-## Latest Release — Version 0.3.0
+## Latest Release — Version 0.3.3 (Phase 4-5)
 
-### Major Changes
+### Phase 5 — Jobs & Earnings CLI
+
+#### 1. `jobs list` Command
+
+Query Payment Service for completed jobs and earnings:
+
+```bash
+blindference-node jobs list --limit 20
+```
+
+- Fetches from `GET /v1/nodes/{address}/jobs?limit=20`
+- Prints rich table: job_id, role, status, amount_earned
+- Shows totals: total jobs, total BLIND earned
+
+#### 2. `jobs claim` Command
+
+No-op placeholder. Rewards are automatically distributed by the Payment Service on job completion. Exists for CLI completeness.
+
+#### 3. Payment Service Integration
+
+- `config.py`: Added `payment_service_url: str = "http://127.0.0.1:8001"`
+- Env override: `BLF_PAYMENT_SERVICE_URL`
+- Node runtime can query its own earnings history from the Payment Service
+
+#### 4. Hardening Fixes
+
+- **Receipt validation**: `_require_receipt_success()` ensures all 11 on-chain transaction functions verify `receipt.status == 1`
+- **Attestation fix**: Real `NodeRegistry.updateAttestation()` call with 32-byte cert_hash padding
+- **Directory-local config**: Default config directory changed from `~/.blindference` to `os.getcwd()` for project-local isolation
+
+### Previous Major Changes
 
 #### 1. Auto-Re-Attestation (New)
 

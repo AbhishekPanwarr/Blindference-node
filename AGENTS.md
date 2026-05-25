@@ -171,6 +171,8 @@ blindference-node run
 | `models test [--backend NAME] [--model ID] [--prompt TEXT]` | Test inference backend | Ready |
 | `models add DOTTED_PATH` | Register custom backend class | Ready |
 | `test-determinism [--model ID] [--prompt TEXT]` | Self-test deterministic output | Ready |
+| `jobs list [--limit N]` | List completed jobs and earnings from Payment Service | Ready |
+| `jobs claim` | Claim pending earnings (no-op — auto-distributed) | Ready |
 | `withdraw` | Stake withdrawal (not implemented) | Stub |
 
 ### 5.1 Command Details
@@ -281,7 +283,8 @@ blindference-node run --log-level DEBUG
   "cofhe_mode": "bridge",
   "cofhe_endpoint": "",
   "cofhe_chain_id": 421614,
-  "skip_output_key_storage": false
+  "skip_output_key_storage": false,
+  "payment_service_url": "http://127.0.0.1:8001"
 }
 ```
 
@@ -309,6 +312,7 @@ All config fields can be overridden via environment variables prefixed with `BLF
 | `BLF_COFHE_ENDPOINT` | string | `""` | Arbitrum Sepolia RPC for CoFHE |
 | `BLF_COFHE_CHAIN_ID` | int | 421614 | Chain ID for CoFHE |
 | `BLF_SKIP_OUTPUT_KEY_STORAGE` | bool | `false` | Skip on-chain output key storage |
+| `BLF_PAYMENT_SERVICE_URL` | string | `"http://127.0.0.1:8001"` | Payment Service base URL for job queries |
 | `BLF_KEY_PASSWORD` | string | `""` | Keystore decryption password |
 | `GROQ_API_KEY` | string | `""` | Groq API key |
 | `GOOGLE_API_KEY` | string | `""` | Google AI API key |
@@ -800,6 +804,48 @@ This is called automatically during `init`. If it fails, `init` exits with error
 
 ---
 
+## 14.5 Jobs & Earnings Commands (Phase 4)
+
+### `jobs list`
+
+```bash
+blindference-node jobs list --limit 20
+```
+
+**What it does**:
+1. Queries Payment Service `GET /v1/nodes/{address}/jobs?limit=20`
+2. Prints rich table with: job_id, role (leader/verifier), status, amount earned
+3. Shows totals: total jobs, total BLIND earned
+
+**Example output**:
+```
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃              BLINDFERENCE NODE — JOB HISTORY             ┃
+┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
+┃  Node Address : 0x61e72a024aE31ed2f0656a37b3B3172CDC364C85 ┃
+┃  Total Jobs   : 15                                       ┃
+┃  Total Earned : 12.5 BLIND                               ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+  Job ID          Role      Status     Earned (BLIND)
+  ─────────────────────────────────────────────────────
+  job_0xabc...    leader    COMPLETED  0.6
+  job_0xdef...    verifier  COMPLETED  0.2
+```
+
+**Env vars used**:
+- `BLF_PAYMENT_SERVICE_URL` — override default Payment Service endpoint
+
+### `jobs claim`
+
+```bash
+blindference-node jobs claim
+```
+
+**What it does**: No-op. Rewards are automatically distributed by the Payment Service when a job completes successfully. This command exists for CLI completeness and future compatibility.
+
+---
+
 ## 15. Auto Re-Attestation
 
 ### 15.1 Watchdog Trigger
@@ -1133,9 +1179,14 @@ MIT License — see `LICENSE` file.
 
 ## 25. Last Updated
 
-This document was last updated on **2026-05-24** for `blindference-node` **v0.3.2**.
+This document was last updated on **2026-05-25** for `blindference-node` **v0.3.3**.
 
 **Recent changes**:
+- **Jobs & Earnings CLI**: Added `jobs list` and `jobs claim` commands. `jobs list` queries Payment Service for job history and prints rich table.
+- **Payment Service URL config**: Added `payment_service_url` to config (default `http://127.0.0.1:8001`), overridable via `BLF_PAYMENT_SERVICE_URL`
+- **Directory-local config**: `DEFAULT_CONFIG_DIR` changed from `~/.blindference` to current working directory (`os.getcwd()`)
+- **Receipt.status validation**: Added `_require_receipt_success()` to `registry.py`; fixed all 11 transaction functions to verify tx success
+- **Node attestation fix**: Replaced stub `update_attestation()` with real `NodeRegistry.updateAttestation()` call; padded cert_hash to 32 bytes
 - Strip quotes from `.env` values in fallback parser and Groq API key
 - Auto-detect on-chain registration in `attest` CLI
 - Add `python-dotenv>=1.0` as required dependency
@@ -1143,9 +1194,8 @@ This document was last updated on **2026-05-24** for `blindference-node` **v0.3.
 - All tests passing (84 passed, 1 skipped)
 - Published to PyPI via Trusted Publishing (OIDC)
 
-**Git commits** (as of 2026-05-24):
+**Git commits** (as of 2026-05-25):
+- `jobs-cli` — feat(node): add jobs list/claim commands and payment_service_url config
 - `c866d59` — fix(node): strip quotes from .env values and Groq API key
 - `9361d78` — feat: auto-detect on-chain registration + add python-dotenv dep
 - `e5687a6` — fix: use BLF_RPC_URL for NodeRegistry checks
-- `947071b` — docs: Readme update
-- `e329729` — feat: restore full node CLI

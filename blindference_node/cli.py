@@ -1,6 +1,7 @@
 """Blindference Node CLI — entry point for node operators."""
 
 import asyncio
+import json
 import os
 import sys
 import time
@@ -946,3 +947,70 @@ def staking_status() -> None:
     else:
         click.echo("  No stake info found (staking contract may not be deployed).")
     click.echo("=" * 60)
+
+
+# ---------------------------------------------------------------------------
+# jobs
+# ---------------------------------------------------------------------------
+
+
+@main.group("jobs")
+def jobs_group() -> None:
+    """View job history and earnings."""
+
+
+@jobs_group.command("list")
+@click.option("--limit", default=20, help="Maximum number of jobs to show")
+def jobs_list(limit: int) -> None:
+    """List recent jobs and BLIND earnings for this node."""
+    import urllib.request
+    import urllib.error
+
+    config = load_config()
+    if not config.node_address:
+        click.echo("Node not initialised. Run `blindference-node init` first.")
+        raise SystemExit(1)
+
+    url = f"{config.payment_service_url}/v1/nodes/{config.node_address}/jobs?limit={limit}"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        click.echo(f"Payment Service unreachable: {exc.reason}", err=True)
+        raise SystemExit(1)
+    except Exception as exc:
+        click.echo(f"Failed to fetch jobs: {exc}", err=True)
+        raise SystemExit(1)
+
+    jobs = data.get("jobs", [])
+    if not jobs:
+        click.echo("No jobs found for this node.")
+        return
+
+    click.echo("=" * 80)
+    click.echo(f"  Job History for {config.node_address}")
+    click.echo("=" * 80)
+    click.echo(f"  {'Job ID':<50} {'Role':<12} {'Status':<12} {'BLIND Earned'}")
+    click.echo("-" * 80)
+
+    total_earned = 0.0
+    for job in jobs:
+        job_id = job.get("job_id", "")[:48]
+        role = job.get("role", "unknown")
+        status = job.get("status", "UNKNOWN")
+        earned = job.get("amount_blind_earned")
+        earned_str = f"{earned:.3f}" if earned is not None else "—"
+        if earned is not None and earned > 0:
+            total_earned += earned
+        click.echo(f"  {job_id:<50} {role:<12} {status:<12} {earned_str}")
+
+    click.echo("-" * 80)
+    click.echo(f"  Total BLIND earned: {total_earned:.3f}")
+    click.echo("=" * 80)
+
+
+@jobs_group.command("claim")
+def jobs_claim() -> None:
+    """Claim pending rewards (no-op — rewards are auto-distributed)."""
+    click.echo("Rewards are automatically distributed on job completion.")
+    click.echo("No manual claim action is needed.")

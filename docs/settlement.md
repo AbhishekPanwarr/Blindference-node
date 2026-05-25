@@ -176,6 +176,37 @@ print(f"Leader cUSDC balance: {leader_balance}")
 
 The split is configurable by the PayoutClaimer owner via `setSplit(leaderBps, verifierBps)` where both values are in basis points (e.g., 6000 = 60%).
 
+---
+
+## BLIND Token Rewards (Payment Service)
+
+In addition to Reineira USDC escrows, the **Payment Service** distributes **BLIND token rewards** for every successfully verified inference job:
+
+- **Reward amount**: 1 BLIND per verified job (sourced from Payment Service wallet balance)
+- **Split**: 60% leader, 20% each verifier (2 verifiers)
+- **Distribution**: Automatic — no manual claiming required
+- **Storage**: Per-job reward map stored in `JobRecord.rewards: dict[str, float]`
+
+### Viewing Your Earnings
+
+Use the node CLI to query your earnings history:
+
+```bash
+blindference-node jobs list --limit 20
+```
+
+This queries `GET /v1/nodes/{address}/jobs` from the Payment Service and displays:
+- Total jobs completed
+- Total BLIND earned
+- Per-job breakdown (role, status, amount)
+
+### Prerequisites for BLIND Rewards
+
+- Node must be registered and active on `NodeRegistry`
+- Node must have a valid attestation certificate
+- Node must successfully complete its assigned task (leader or verifier)
+- Payment Service wallet must be funded with BLIND tokens
+
 ## Troubleshooting
 
 | Issue | Solution |
