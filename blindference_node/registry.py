@@ -433,9 +433,14 @@ def update_attestation(
     if new_registry is None:
         return None
     try:
+        # Pad cert_hash to 32 bytes (64 hex chars) for bytes32 compatibility
+        raw_hash = cert_hash.replace("0x", "")
+        padded_hash = raw_hash.ljust(64, "0")
+        cert_hash_bytes = bytes.fromhex(padded_hash)
+
         tx = new_registry.functions.updateAttestation(
             wallet.address,
-            w3.to_bytes(hexstr=cert_hash) if cert_hash.startswith("0x") else w3.to_bytes(hexstr="0x" + cert_hash),
+            cert_hash_bytes,
             config.tier,
             attestation_expiry,
         ).build_transaction(
