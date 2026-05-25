@@ -354,8 +354,7 @@ def attest(mock: bool, tee_key: str | None) -> None:
         BLF_KEY_PASSWORD        — keystore password (if absent, prompts)
         MOCK_ATTESTATION_KEY    — mock attestation quote key (default: weloveblindference)
         BLF_ICL_ENDPOINT        — ICL base URL (default: https://icl.blindference.xyz)
-        BLF_RPC_URL             — Arbitrum Sepolia RPC endpoint (preferred)
-        BLF_FHENIX_RPC          — Legacy alias for EVM RPC endpoint
+        BLF_RPC_URL             — Arbitrum Sepolia RPC endpoint
     """
 
     config = load_config()
@@ -459,14 +458,17 @@ def attest(mock: bool, tee_key: str | None) -> None:
     click.echo("\nOn-chain Registration")
     click.echo("-" * 60)
 
-    # NodeRegistry lives on Arbitrum Sepolia (chain 421614), not Fhenix testnet.
-    # Prefer BLF_RPC_URL (Arbitrum Sepolia Alchemy key) and fall back to legacy
-    # BLF_FHENIX_RPC for backwards compatibility.
-    rpc = os.environ.get("BLF_RPC_URL") or os.environ.get(
-        "BLF_FHENIX_RPC", "https://testnet.fhenix.zone"
-    )
-    w3 = Web3(Web3.HTTPProvider(rpc))
-    registry_deployed, registry_name = _check_node_registry_deployed(w3)
+    # NodeRegistry lives on Arbitrum Sepolia (chain 421614).
+    # Use config.rpc_url (set via BLF_RPC_URL env var or loaded from config file).
+    rpc = config.rpc_url
+    if not rpc:
+        click.echo("  Warning: No RPC configured (BLF_RPC_URL). Skipping on-chain registration.", err=True)
+        w3 = None
+        registry_deployed = False
+        registry_name = "none"
+    else:
+        w3 = Web3(Web3.HTTPProvider(rpc))
+        registry_deployed, registry_name = _check_node_registry_deployed(w3)
 
     if not registry_deployed:
         click.echo("  NodeRegistry not deployed on this network.")
@@ -657,7 +659,7 @@ def status() -> None:
     click.echo(f"  Attestation    : {config.attestation_backend or 'none'}")
     click.echo(f"  Cert expiry    : {config.attestation_expiry} ({remaining}s remaining)")
     click.echo(f"  ICL endpoint   : {config.icl_endpoint}")
-    click.echo(f"  Fhenix RPC     : {config.fhenix_rpc}")
+    click.echo(f"  RPC URL        : {config.rpc_url}")
     click.echo(f"  IPFS gateway   : {config.ipfs_gateway}")
     click.echo(f"  CoFHE mode     : {config.cofhe_mode}")
     click.echo("=" * 60)
@@ -809,9 +811,9 @@ def staking_stake(amount: float) -> None:
         password = click.prompt("Wallet decryption password", hide_input=True, default="")
     wallet = load_wallet(config.keystore_path, password)
 
-    rpc = os.environ.get("BLF_RPC_URL") or os.environ.get("BLF_FHENIX_RPC")
+    rpc = config.rpc_url or os.environ.get("BLF_FHENIX_RPC")
     if not rpc:
-        click.echo("Error: BLF_RPC_URL not set.", err=True)
+        click.echo("Error: No RPC configured. Set BLF_RPC_URL or BLF_FHENIX_RPC.", err=True)
         raise SystemExit(1)
 
     w3 = Web3(Web3.HTTPProvider(rpc))
@@ -857,9 +859,9 @@ def staking_unstake() -> None:
         password = click.prompt("Wallet decryption password", hide_input=True, default="")
     wallet = load_wallet(config.keystore_path, password)
 
-    rpc = os.environ.get("BLF_RPC_URL") or os.environ.get("BLF_FHENIX_RPC")
+    rpc = config.rpc_url or os.environ.get("BLF_FHENIX_RPC")
     if not rpc:
-        click.echo("Error: BLF_RPC_URL not set.", err=True)
+        click.echo("Error: No RPC configured. Set BLF_RPC_URL or BLF_FHENIX_RPC.", err=True)
         raise SystemExit(1)
 
     w3 = Web3(Web3.HTTPProvider(rpc))
@@ -889,9 +891,9 @@ def staking_withdraw() -> None:
         password = click.prompt("Wallet decryption password", hide_input=True, default="")
     wallet = load_wallet(config.keystore_path, password)
 
-    rpc = os.environ.get("BLF_RPC_URL") or os.environ.get("BLF_FHENIX_RPC")
+    rpc = config.rpc_url or os.environ.get("BLF_FHENIX_RPC")
     if not rpc:
-        click.echo("Error: BLF_RPC_URL not set.", err=True)
+        click.echo("Error: No RPC configured. Set BLF_RPC_URL or BLF_FHENIX_RPC.", err=True)
         raise SystemExit(1)
 
     w3 = Web3(Web3.HTTPProvider(rpc))
@@ -921,9 +923,9 @@ def staking_status() -> None:
     from blindference_node.registry import get_stake_info
 
     config = load_config()
-    rpc = os.environ.get("BLF_RPC_URL") or os.environ.get("BLF_FHENIX_RPC")
+    rpc = config.rpc_url or os.environ.get("BLF_FHENIX_RPC")
     if not rpc:
-        click.echo("Error: BLF_RPC_URL not set.", err=True)
+        click.echo("Error: No RPC configured. Set BLF_RPC_URL or BLF_FHENIX_RPC.", err=True)
         raise SystemExit(1)
 
     w3 = Web3(Web3.HTTPProvider(rpc))

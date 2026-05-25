@@ -95,18 +95,21 @@ async def _re_attest(
         config.attestation_expiry = result.get("expiry", 0)
         save_config(config)
 
-        # Best‑effort on‑chain update
-        try:
-            await asyncio.to_thread(
-                update_attestation,
-                w3,
-                config,
-                wallet,
-                config.attestation_cert_hash,
-                config.attestation_expiry,
-            )
-        except Exception as exc:
-            logger.warning("On‑chain attestation update failed: %s", exc)
+        # Best‑effort on‑chain update (only if RPC is configured)
+        if w3 is not None:
+            try:
+                await asyncio.to_thread(
+                    update_attestation,
+                    w3,
+                    config,
+                    wallet,
+                    config.attestation_cert_hash,
+                    config.attestation_expiry,
+                )
+            except Exception as exc:
+                logger.warning("On‑chain attestation update failed: %s", exc)
+        else:
+            logger.debug("Skipping on‑chain attestation update: no RPC configured")
 
         logger.info(
             "Attestation renewed — new expiry: %d",
@@ -316,7 +319,7 @@ async def start_daemon(config: Config, wallet: LocalAccount) -> None:
         return
 
     wallet_key = "0x" + wallet.key.hex()
-    w3 = Web3(Web3.HTTPProvider(config.fhenix_rpc))
+    w3 = Web3(Web3.HTTPProvider(config.rpc_url)) if config.rpc_url else None
     icl = ICLClient(config.icl_endpoint, wallet)
     ipfs = IPFSClient(config.ipfs_gateway)
     cofhe = get_cofhe_client(config, wallet_key)

@@ -54,7 +54,7 @@ def _config(**overrides) -> Config:
         "supported_model_ids": ["qwen2.5-7b"],
         "attestation_backend": "mock",
         "icl_endpoint": "http://localhost:9999",
-        "fhenix_rpc": "http://localhost:8545",
+        "rpc_url": "http://localhost:8545",
         "attestation_cert_hash": "0xabcdef",
         "attestation_expiry": int(time.time()) + 86400,  # 24h valid
     }
