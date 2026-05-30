@@ -2,6 +2,7 @@
 
 [![PyPI version](https://badge.fury.io/py/blindference-node.svg)](https://pypi.org/project/blindference-node/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Node.js 18+](https://img.shields.io/badge/node.js-18+-green.svg)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **Confidential inference worker for the Blindference decentralized AI execution network.**
@@ -24,39 +25,92 @@ Blindference Node is the runtime that executes confidential inference tasks assi
 
 ---
 
-## Quick Start
+## Prerequisites
 
-### 1. Install
+Blindference Node requires **both** Python and Node.js runtimes:
+
+| Runtime | Minimum Version | Check Command | Why Required |
+|---------|----------------|---------------|--------------|
+| **Python** | 3.10+ | `python --version` | CLI, wallet management, inference backends |
+| **Node.js** | 18+ | `node --version` | CoFHE bridge (`cofhe_bridge.mjs`) |
+| **npm** | bundled with Node | `npm --version` | Installing CoFHE SDK and viem dependencies |
+
+### Verify Your Environment
 
 ```bash
-pip install blindference-node
+# Check Python
+python --version   # Should print 3.10.x or higher
+
+# Check Node.js
+node --version     # Should print v18.x.x or higher
+npm --version      # Should print 10.x.x or higher
 ```
 
-For GPU-accelerated local inference (optional):
+If either is missing:
+- **Python**: [python.org/downloads](https://www.python.org/downloads/) or `apt install python3 python3-pip`
+- **Node.js**: [nodejs.org](https://nodejs.org/) or `apt install nodejs npm`
 
-```bash
-pip install "blindference-node[gpu]"
-```
+---
 
-Or install from source:
+## Quick Start (First-Time Setup)
+
+### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/AbhishekPanwarr/Blindference-node.git
 cd Blindference-node
+```
+
+> **Why clone instead of `pip install`?**  
+> The CoFHE bridge (`cofhe_bridge.mjs`) depends on Node.js packages (`@cofhe/sdk`, `viem`) that cannot be bundled in a Python wheel. Cloning gives you the full source including the `package.json` that declares these dependencies.
+
+### 2. Install Node.js Dependencies (CoFHE Bridge)
+
+```bash
+npm install
+```
+
+This installs:
+- `@cofhe/sdk` — Fhenix CoFHE client for confidential decryption
+- `viem` — Ethereum client for on-chain interactions
+
+### 3. Install Python Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Install the CLI Package
+
+```bash
 pip install -e .
 ```
 
-### 2. Initialize
+This creates the `blindference-node` command globally in your environment.
+
+### 5. Verify Installation
+
+```bash
+blindference-node --help
+```
+
+You should see the CLI help output with commands: `init`, `attest`, `run`, `status`, `staking`, `models`, etc.
+
+---
+
+## Node Lifecycle
+
+### Step 1: Initialize (`blindference-node init`)
 
 ```bash
 blindference-node init
 ```
 
 This will:
-1. Detect GPU capabilities (or default to mock inference)
+1. Detect GPU capabilities (or default to cloud inference)
 2. Auto-detect cloud API keys (Groq / Gemini) from environment
 3. Generate an encrypted Ethereum wallet keystore
-4. Save configuration to `~/.blindference/config.json`
+4. Save configuration to `./config.json` (or `~/.blindference/config.json` if `BLF_CONFIG_DIR` is set)
 
 **Non-interactive mode:**
 
@@ -66,13 +120,13 @@ export BLF_KEY_PASSWORD=secure_password
 blindference-node init
 ```
 
-### 3. Attest
+### Step 2: Attest (`blindference-node attest`)
 
 ```bash
 # Interactive attestation (choose mock or TEE)
 blindference-node attest
 
-# Or skip interactive menu and use mock directly
+# Or skip interactive menu and use mock directly (for development)
 blindference-node attest --mock
 
 # With custom development key
@@ -81,7 +135,7 @@ blindference-node attest --mock --tee-key mydevkey
 
 After ICL attestation, optionally register on-chain with gas estimation.
 
-### 4. Stake BLIND Tokens
+### Step 3: Stake BLIND Tokens (`blindference-node staking stake`)
 
 Nodes must stake at least **1000 BLIND** to participate in inference quorums. Staking provides economic security — stake is slashed if a node produces incorrect output or times out.
 
@@ -105,7 +159,7 @@ blindference-node staking withdraw
 - Reward per job: **1 BLIND** (60% leader, 20% each verifier)
 - Slashing: **3 consecutive failures** → entire stake hard-slashed on-chain
 
-### 5. Run
+### Step 4: Run the Daemon (`blindference-node run`)
 
 ```bash
 blindference-node run
@@ -122,25 +176,93 @@ The daemon starts four concurrent loops:
 
 ---
 
-## Commands
+## Environment Variables
+
+All configuration can be overridden via environment variables prefixed with `BLF_`:
+
+| Variable | Type | Description | Example |
+|----------|------|-------------|---------|
+| `BLF_PRIVATE_KEY` | string | Operator wallet private key (hex) | `0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80` |
+| `BLF_KEY_PASSWORD` | string | Keystore decryption password | `secure_password` |
+| `BLF_ICL_ENDPOINT` | string | ICL base URL | `https://icl.blindference.xyz` |
+| `BLF_RPC_URL` | string | Arbitrum Sepolia RPC endpoint | `https://arb-sepolia.g.alchemy.com/v2/YOUR_KEY` |
+| `BLF_COFHE_ENDPOINT` | string | CoFHE/EVM RPC endpoint (usually same as RPC) | `https://arb-sepolia.g.alchemy.com/v2/YOUR_KEY` |
+| `BLF_COFHE_CHAIN_ID` | int | Chain ID for CoFHE | `421614` |
+| `BLF_COFHE_MODE` | string | `bridge` (TypeScript subprocess) or `python` (HTTP) | `bridge` |
+| `GROQ_API_KEY` | string | Enables Groq cloud backend | `gsk_...` |
+| `GOOGLE_API_KEY` | string | Enables Gemini cloud backend | `AIza...` |
+| `BLF_LOG_LEVEL` | string | Logging verbosity | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
+### Critical: Set Real RPC Endpoints
+
+The default Alchemy URL `https://arb-sepolia.g.alchemy.com/v2/demo` is a **placeholder** and will fail:
+
+```bash
+# Get a free key at https://dashboard.alchemy.com/apps
+export BLF_RPC_URL='https://arb-sepolia.g.alchemy.com/v2/YOUR_REAL_KEY'
+export BLF_COFHE_URL='https://arb-sepolia.g.alchemy.com/v2/YOUR_REAL_KEY'
+```
+
+Without a real RPC endpoint, the node will crash during CoFHE decryption with:
+```
+Invalid CoFHE RPC URL: https://arb-sepolia.g.alchemy.com/v2/demo
+The default Alchemy key is a placeholder. Set a real key.
+```
+
+---
+
+## Model Backends
+
+Blindference Node uses a **pluggable backend registry** to support multiple inference providers.
+
+### Built-in Backends
+
+| Backend | Description | Requirements | Model IDs |
+|---------|-------------|--------------|-----------|
+| `vllm` | Local GPU inference | NVIDIA GPU + `vllm` package | `facebook/opt-125m` |
+| `groq` | Groq cloud API | `GROQ_API_KEY` env var | `groq:llama-3.3-70b-versatile` |
+| `gemini` | Google Gemini REST API | `GOOGLE_API_KEY` env var | `gemini:gemini-2.5-flash` |
+| `mock` | Deterministic SHA-256 fallback | Always available | `*` (universal fallback) |
+
+### Custom Backends
+
+```python
+from blindference_node.models.base import ModelBackend
+
+class MyBackend(ModelBackend):
+    def name(self) -> str: return "my-backend"
+    def is_available(self) -> bool: return True
+    def supported_models(self) -> list[str]: return ["my-model"]
+    def run(self, model_id: str, prompt: str) -> str: return "result"
+```
+
+Register via CLI:
+
+```bash
+blindference-node models add my_package.backends:MyBackend
+```
+
+---
+
+## Commands Reference
 
 | Command | Description | Status |
 |---------|-------------|--------|
-| `init` | Initialize node — wallet, GPU detection, save config | ✅ Ready |
-| `attest` | Attest node with ICL (mock / TEE) and optionally register on-chain | ✅ Ready |
-| `run` | Start daemon — heartbeat, watchdog, job polling & execution | ✅ Ready |
-| `status` | Show node status — address, tier, models, cert expiry | ✅ Ready |
-| `staking stake` | Stake BLIND tokens to join inference quorums | ✅ Ready |
-| `staking unstake` | Initiate unstake (starts 96h unbonding) | ✅ Ready |
-| `staking withdraw` | Complete withdrawal after unbonding period | ✅ Ready |
-| `staking status` | Show BLIND stake status and failure count | ✅ Ready |
-| `models list` | List all registered inference backends and availability | ✅ Ready |
-| `models test` | Test a specific backend with a prompt | ✅ Ready |
-| `models add` | Register a custom backend from a dotted Python path | ✅ Ready |
-| `test-determinism` | Run GPU determinism self-test with vLLM or cloud APIs | ✅ Ready |
-| `jobs list` | List completed jobs and BLIND earnings | ✅ Ready |
-| `jobs earnings` | Total BLIND earned across all completed jobs | ✅ Ready |
-| `balance` | Current BLIND token balance | ✅ Ready |
+| `init` | Initialize node — wallet, GPU detection, save config | Ready |
+| `attest` | Attest node with ICL (mock / TEE) and optionally register on-chain | Ready |
+| `run` | Start daemon — heartbeat, watchdog, job polling & execution | Ready |
+| `status` | Show node status — address, tier, models, cert expiry | Ready |
+| `staking stake` | Stake BLIND tokens to join inference quorums | Ready |
+| `staking unstake` | Initiate unstake (starts 96h unbonding) | Ready |
+| `staking withdraw` | Complete withdrawal after unbonding period | Ready |
+| `staking status` | Show BLIND stake status and failure count | Ready |
+| `models list` | List all registered inference backends and availability | Ready |
+| `models test` | Test a specific backend with a prompt | Ready |
+| `models add` | Register a custom backend from a dotted Python path | Ready |
+| `test-determinism` | Run GPU determinism self-test with vLLM or cloud APIs | Ready |
+| `jobs list` | List completed jobs and BLIND earnings | Ready |
+| `jobs earnings` | Total BLIND earned across all completed jobs | Ready |
+| `balance` | Current BLIND token balance | Ready |
 
 ---
 
@@ -189,24 +311,24 @@ flowchart TB
 
 ## Configuration
 
-All configuration is stored in `~/.blindference/config.json` and can be overridden via environment variables prefixed with `BLF_`.
+All configuration is stored in `./config.json` (or `~/.blindference/config.json` if `BLF_CONFIG_DIR` is set) and can be overridden via environment variables prefixed with `BLF_`.
 
 ### Default Config
 
 ```json
 {
   "node_address": "0x...",
-  "keystore_path": "~/.blindference/keystore.json",
+  "keystore_path": "./keystore.json",
   "tier": 0,
   "supported_model_ids": ["facebook/opt-125m"],
   "custom_backends": [],
   "attestation_backend": "mock",
   "icl_endpoint": "https://icl.blindference.xyz",
-  "fhenix_rpc": "https://testnet.fhenix.zone",
+  "rpc_url": "",
   "ipfs_gateway": "https://node.lighthouse.storage",
-  "model_cache_dir": "~/.blindference/models",
+  "model_cache_dir": "./models",
   "log_level": "INFO",
-  "network": "fhenix_testnet",
+  "network": "arbitrum_sepolia",
   "attestation_cert_hash": "",
   "attestation_expiry": 0,
   "registered_on_chain": false,
@@ -218,28 +340,6 @@ All configuration is stored in `~/.blindference/config.json` and can be overridd
 }
 ```
 
-### Environment Variables
-
-| Variable | Type | Description |
-|----------|------|-------------|
-| `BLF_NODE_ADDRESS` | string | Ethereum address (0x...) |
-| `BLF_KEYSTORE_PATH` | string | Path to encrypted keystore |
-| `BLF_TIER` | int | Attestation tier (0=mock, 1=TPM, 2=TEE) |
-| `BLF_SUPPORTED_MODEL_IDS` | list | Comma-separated model IDs |
-| `BLF_CUSTOM_BACKENDS` | list | Dotted Python paths for custom backends |
-| `BLF_ATTESTATION_BACKEND` | string | `mock`, `tpm`, or `sgx` |
-| `BLF_ICL_ENDPOINT` | string | ICL base URL |
-| `BLF_FHENIX_RPC` | string | EVM RPC endpoint |
-| `BLF_IPFS_GATEWAY` | string | IPFS download/upload gateway |
-| `BLF_LOG_LEVEL` | string | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `BLF_COFHE_MODE` | string | `bridge` (TypeScript subprocess) or `python` (HTTP) |
-| `BLF_COFHE_ENDPOINT` | string | CoFHE/EVM RPC endpoint |
-| `BLF_COFHE_CHAIN_ID` | int | Chain ID for CoFHE (421614 for Arbitrum Sepolia) |
-| `BLF_KEY_PASSWORD` | string | Keystore decryption password |
-| `GROQ_API_KEY` | string | Enables Groq cloud backend |
-| `GOOGLE_API_KEY` | string | Enables Gemini cloud backend |
-| `MOCK_ATTESTATION_KEY` | string | Override default mock attestation key |
-
 ### CoFHE Modes
 
 **`bridge` (default)**: Spawns a TypeScript subprocess via `@cofhe/sdk/node` for CoFHE operations. More reliable, handles SDK lifecycle correctly.
@@ -248,161 +348,67 @@ All configuration is stored in `~/.blindference/config.json` and can be overridd
 
 ---
 
-## Model Backends
+## Troubleshooting
 
-Blindference Node uses a **pluggable backend registry** to support multiple inference providers.
+### "Invalid CoFHE RPC URL" error
 
-### Built-in Backends
-
-| Backend | Description | Requirements | Model IDs |
-|---------|-------------|--------------|-----------|
-| `vllm` | Local GPU inference | NVIDIA GPU + `vllm` package | `facebook/opt-125m` |
-| `groq` | Groq cloud API | `GROQ_API_KEY` env var | `groq:llama-3.3-70b-versatile` |
-| `gemini` | Google Gemini REST API | `GOOGLE_API_KEY` env var | `gemini:gemini-2.5-flash` |
-| `mock` | Deterministic SHA-256 fallback | Always available | `*` (universal fallback) |
-
-### Custom Backends
-
-```python
-from blindference_node.models.base import ModelBackend
-
-class MyBackend(ModelBackend):
-    def name(self) -> str: return "my-backend"
-    def is_available(self) -> bool: return True
-    def supported_models(self) -> list[str]: return ["my-model"]
-    def run(self, model_id: str, prompt: str) -> str: return "result"
+**Symptom:**
+```
+Invalid CoFHE RPC URL: https://arb-sepolia.g.alchemy.com/v2/demo
+The default Alchemy key is a placeholder. Set a real key.
 ```
 
-Register via CLI:
+**Fix:**
+```bash
+export BLF_RPC_URL='https://arb-sepolia.g.alchemy.com/v2/YOUR_REAL_KEY'
+export BLF_COFHE_ENDPOINT='https://arb-sepolia.g.alchemy.com/v2/YOUR_REAL_KEY'
+```
+
+Get a free key at [alchemy.com](https://dashboard.alchemy.com/apps).
+
+### "CoFHE bridge process exited with code 1"
+
+**Symptom:** Node crashes during job execution with bridge exit code 1.
+
+**Fix:** Ensure you ran `npm install` in the repo root before starting the node. The bridge requires `@cofhe/sdk` and `viem` Node.js packages.
 
 ```bash
-blindference-node models add my_package.backends:MyBackend
+cd /path/to/Blindference-node
+npm install
+```
+
+### "Module not found: @cofhe/sdk"
+
+**Symptom:**
+```
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@cofhe/sdk'
+```
+
+**Fix:** You skipped `npm install`. Run it now:
+```bash
+npm install
+```
+
+### "Permission denied: blindference-node"
+
+**Symptom:** Command not found after `pip install -e .`.
+
+**Fix:** Ensure your Python environment's `bin/` directory is in `PATH`, or use the full path:
+```bash
+python -m blindference_node.cli --help
 ```
 
 ---
 
-## Node Lifecycle
+## PyPI Package
 
-### 1. Initialization (`init`)
+A PyPI package is available for convenience:
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant Node as blindference-node
-    
-    User->>Node: init
-    Node->>Node: detect GPU / cloud API keys
-    Node->>Node: generate wallet + keystore
-    Node->>Node: save config
+```bash
+pip install blindference-node
 ```
 
-### 2. Attestation (`attest`)
-
-```mermaid
-sequenceDiagram
-    participant Node as blindference-node
-    participant ICL
-    participant Chain as Arbitrum Sepolia
-    
-    Node->>ICL: GET /internal/challenge/{addr}
-    ICL-->>Node: challengeId + nonce
-    Node->>Node: generate attestation quote
-    Node->>ICL: POST /internal/attestation/verify
-    ICL-->>Node: certHash + expiry + tier
-    opt On-chain registration
-        Node->>Chain: NodeRegistry.register()
-        Chain-->>Node: tx hash
-    end
-    Node->>Node: save config
-```
-
-### 3. Daemon Execution (`run`)
-
-```mermaid
-sequenceDiagram
-    participant Node as blindference-node
-    participant ICL
-    participant Chain as Arbitrum Sepolia
-    participant COFHE as CoFHE Network
-    participant LLM as Groq/Gemini
-    
-    Node->>Node: check attestation expiry
-    alt expired or missing
-        Node->>ICL: auto-re-attest
-    end
-    
-    par ICL Heartbeat
-        loop Every 60s
-            Node->>ICL: POST /internal/heartbeat
-        end
-    and On-Chain Heartbeat
-        loop Every 10 days
-            Node->>Chain: NodeRegistry.heartbeat()
-        end
-    and Watchdog
-        loop Every 10min
-            Node->>Node: check cert expiry < 6h
-            alt needs re-attest
-                Node->>ICL: re-attest
-            end
-        end
-    and Assignment Poller
-        loop Every 5s
-            Node->>ICL: GET /internal/assignments/{addr}
-            alt assignments found
-                Node->>Node: spawn job worker (max 2 concurrent)
-            end
-        end
-    end
-```
-
-### 4. Job Execution
-
-```mermaid
-sequenceDiagram
-    participant Worker as Job Worker
-    participant ICL
-    participant COFHE as CoFHE Network
-    participant IPFS
-    participant LLM as Groq/Gemini
-    
-    Worker->>ICL: POST /internal/task/claim
-    ICL-->>Worker: kpHighHandle + kpLowHandle + claimDeadline
-    
-    alt leader role
-        Worker->>COFHE: decryptForView(kpHighHandle).withPermit()
-        Worker->>COFHE: decryptForView(kpLowHandle).withPermit()
-        Worker->>Worker: reconstruct AES key
-        Worker->>IPFS: download encrypted prompt blob
-        Worker->>Worker: AES decrypt prompt
-        Worker->>LLM: run inference
-        Worker->>Worker: AES encrypt output
-        Worker->>Worker: split output key into halves
-        Worker->>COFHE: encrypt output key halves
-        Worker->>Chain: storeKey(output key) in PromptKeyStore
-        Worker->>IPFS: upload encrypted output blob
-        Worker->>ICL: POST /internal/task/result
-    else verifier role
-        Worker->>COFHE: decryptForView(kpHighHandle).withPermit()
-        Worker->>COFHE: decryptForView(kpLowHandle).withPermit()
-        Worker->>Worker: reconstruct AES key
-        Worker->>IPFS: download encrypted prompt blob
-        Worker->>Worker: AES decrypt prompt
-        Worker->>LLM: run inference
-        Worker->>Worker: hash result
-        Worker->>ICL: POST /internal/task/verify
-    end
-```
-
----
-
-## Requirements
-
-- **Python**: 3.10 or higher
-- **Operating System**: Linux (tested on Ubuntu 22.04), macOS
-- **GPU** (optional): NVIDIA GPU with CUDA support for local vLLM inference
-- **Network**: Outbound HTTPS to ICL, Fhenix RPC, IPFS gateway, Groq/Gemini APIs
-- **Storage**: ~2GB for model cache (if running local models)
+> **Note:** The PyPI wheel includes the Python CLI but does **not** bundle Node.js dependencies. After `pip install`, you must still run `npm install` in the package directory to install the CoFHE bridge dependencies. For first-time setup, **cloning the repository is recommended** (see Quick Start above).
 
 ---
 
@@ -415,11 +421,15 @@ sequenceDiagram
 git clone https://github.com/AbhishekPanwarr/Blindference-node.git
 cd Blindference-node
 
+# Install Node.js dependencies
+npm install
+
 # Create virtual environment
 python -m venv venv
 source venv/bin/activate
 
-# Install dependencies
+# Install Python dependencies
+pip install -r requirements.txt
 pip install -e ".[dev]"
 
 # Run tests
@@ -460,7 +470,9 @@ Blindference-node/
 │   ├── test_e2e.py
 │   └── test_wallet.py
 ├── contracts/                  # Solidity contract ABIs
+├── package.json                # Node.js dependencies (CoFHE SDK, viem)
 ├── pyproject.toml              # Package configuration
+├── requirements.txt            # Python dependencies
 ├── docker-compose.yml          # Docker orchestration
 ├── Dockerfile                  # Container image
 └── README.md                   # This file
@@ -477,6 +489,7 @@ docker run -d \
   --name blindference-node \
   -e BLF_KEY_PASSWORD=secure_password \
   -e BLF_ICL_ENDPOINT=https://icl.blindference.xyz \
+  -e BLF_RPC_URL=https://arb-sepolia.g.alchemy.com/v2/YOUR_KEY \
   -v /host/config:/root/.blindference \
   blindference-node run
 ```
@@ -513,6 +526,21 @@ Nodes may be slashed for:
 
 ---
 
+## Consensus Calibration Feedback
+
+Every accepted inference job feeds into a long-term calibration loop that improves quorum accuracy over time:
+
+| Signal | Source | Impact |
+|--------|--------|--------|
+| **Thumbs Up** | User decrypts output, votes "accurate" | Increases confidence weight for leader's model provider |
+| **Thumbs Down** | User decrypts output, votes "not accurate" | Flags potential false positives; triggers threshold review |
+| **Dispute Override** | User overrides quorum rejection | Signals verifier pool may be too strict |
+| **Verdict Mismatch** | Verifiers disagree with accepted leader | Reduces reputation of outlier verifier |
+
+Nodes benefit from accurate calibration — a well-tuned quorum means fewer false rejections (more jobs accepted, more fees earned) and fewer false acceptions (less slashing risk).
+
+---
+
 ## Documentation
 
 - [Quickstart Guide](https://docs.blindference.xyz/compute/quickstart) — Step-by-step first node setup
@@ -535,19 +563,6 @@ We welcome contributions! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for gu
 MIT License — see [LICENSE](./LICENSE) for details.
 
 ---
-
-## Consensus Calibration Feedback
-
-Every accepted inference job feeds into a long-term calibration loop that improves quorum accuracy over time:
-
-| Signal | Source | Impact |
-|--------|--------|--------|
-| **Thumbs Up** | User decrypts output, votes "accurate" | Increases confidence weight for leader's model provider |
-| **Thumbs Down** | User decrypts output, votes "not accurate" | Flags potential false positives; triggers threshold review |
-| **Dispute Override** | User overrides quorum rejection | Signals verifier pool may be too strict |
-| **Verdict Mismatch** | Verifiers disagree with accepted leader | Reduces reputation of outlier verifier |
-
-Nodes benefit from accurate calibration — a well-tuned quorum means fewer false rejections (more jobs accepted, more fees earned) and fewer false acceptions (less slashing risk).
 
 ## Support
 

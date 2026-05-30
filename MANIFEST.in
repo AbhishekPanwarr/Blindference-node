@@ -1,5 +1,7 @@
 include README.md
 include LICENSE
+include package.json
+include requirements.txt
 recursive-include blindference_node/contracts/abis *.json
 recursive-include blindference_node/scripts *.mjs *.ts
 global-exclude __pycache__
