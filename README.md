@@ -536,6 +536,19 @@ MIT License — see [LICENSE](./LICENSE) for details.
 
 ---
 
+## Consensus Calibration Feedback
+
+Every accepted inference job feeds into a long-term calibration loop that improves quorum accuracy over time:
+
+| Signal | Source | Impact |
+|--------|--------|--------|
+| **Thumbs Up** | User decrypts output, votes "accurate" | Increases confidence weight for leader's model provider |
+| **Thumbs Down** | User decrypts output, votes "not accurate" | Flags potential false positives; triggers threshold review |
+| **Dispute Override** | User overrides quorum rejection | Signals verifier pool may be too strict |
+| **Verdict Mismatch** | Verifiers disagree with accepted leader | Reduces reputation of outlier verifier |
+
+Nodes benefit from accurate calibration — a well-tuned quorum means fewer false rejections (more jobs accepted, more fees earned) and fewer false acceptions (less slashing risk).
+
 ## Support
 
 - **Docs**: [docs.blindference.xyz](https://docs.blindference.xyz)
