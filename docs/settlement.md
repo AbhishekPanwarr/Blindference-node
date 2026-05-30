@@ -55,7 +55,7 @@ Developer                  Reineira Chain              Blindference ICL
 | USDC (mock) | `0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d` |
 | InferenceGate | `0xF3014a79985f83898912cAe2676226310A546905` |
 | ResultRegistry | `0xCebd831eCd00915E299b8Ef2666cAbf942dc7150` |
-| PayoutClaimer | `0xEfB565c7989dd1dEDD0C5B8c95dA24Ef2d94FBbd` |
+| PayoutClaimer | `0x6543DaBAE41Bada115a14FaEe4292E2aE1775F44` |
 
 ## Step-by-Step
 
@@ -71,7 +71,7 @@ const sdk = ReineiraSDK.create({
 await sdk.initialize()
 
 const INFERENCE_GATE = '0xF3014a79985f83898912cAe2676226310A546905'
-const PAYOUT_CLAIMER = '0xEfB565c7989dd1dEDD0C5B8c95dA24Ef2d94FBbd'
+const PAYOUT_CLAIMER = '0x6543DaBAE41Bada115a14FaEe4292E2aE1775F44'
 
 // Generate a job ID (or use the one from your Blindference job)
 const jobId = '0x' + 'A'.repeat(64) // 32-byte job ID
@@ -136,7 +136,7 @@ with open("contracts/abis/PayoutClaimer.json") as f:
     abi = json.load(f)["abi"]
 
 claimer = w3.eth.contract(
-    address="0xEfB565c7989dd1dEDD0C5B8c95dA24Ef2d94FBbd",
+    address="0x6543DaBAE41Bada115a14FaEe4292E2aE1775F44",
     abi=abi,
 )
 
