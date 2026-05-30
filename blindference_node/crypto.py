@@ -325,18 +325,20 @@ def _unseal(sealed_bytes: bytes, sealing_private_key: object) -> int:
 
 
 class CoFHEBridgeClient(CoFHEClient):
-    """CoFHE client that spawns a Node.js bridge via JSON stdin/stdout.
+    """CoFHE client that keeps a persistent Node.js bridge process alive.
 
-    Uses ``cofhe_bridge.mjs`` (ESM, no ts-node) with the
-    ``@cofhe/sdk/node`` + viem stack.  The bridge creates self permits
-    internally, stores them in a filesystem localStorage shim, and
-    communicates with the parent process via JSON messages on stdin/stdout.
+    Eliminates the ~10-30 second cold-start cost (module loading + CoFHE
+    client handshake) on every operation by spawning the bridge once and
+    reusing it across all calls via line-delimited JSON over stdin/stdout.
     """
 
     def __init__(self, wallet_private_key: str, rpc_url: str) -> None:
         self._pk = wallet_private_key
         self._rpc_url = rpc_url
         self._scripts_dir = os.path.join(os.path.dirname(__file__), "scripts")
+        self._process: subprocess.Popen | None = None
+        self._req_counter = 0
+        self._closed = False
 
     def _validate_rpc(self) -> None:
         if "YOUR_KEY" in self._rpc_url or "demo" in self._rpc_url:
@@ -347,9 +349,12 @@ class CoFHEBridgeClient(CoFHEClient):
                 "Or copy the ICL's RPC from its .env file."
             )
 
-    def _run_bridge_json(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Spawn ``cofhe_bridge.mjs``, send *payload* as JSON on stdin, read JSON result from stdout."""
-        self._validate_rpc()
+    def _ensure_process(self) -> subprocess.Popen:
+        """Return the running bridge process, spawning it if necessary."""
+        if self._process is not None and self._process.poll() is None:
+            return self._process
+        if self._closed:
+            raise CoFHEAPIError("CoFHE bridge client has been closed")
 
         bridge_path = os.path.join(self._scripts_dir, "cofhe_bridge.mjs")
         if not os.path.exists(bridge_path):
@@ -360,42 +365,83 @@ class CoFHEBridgeClient(CoFHEClient):
             "BLF_PRIVATE_KEY": self._pk,
             "NODE_NO_WARNINGS": "1",
         }
-
-        result = subprocess.run(
+        self._process = subprocess.Popen(
             ["node", bridge_path],
-            input=json.dumps(payload),
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=60,
             env=env,
         )
+        logger.info("CoFHE bridge process started (pid=%s)", self._process.pid)
+        return self._process
 
-        if result.returncode != 0:
-            stderr = result.stderr.strip()
-            # If stdout still has a JSON error object, prefer it for the message
-            if result.stdout.strip():
-                try:
-                    parsed = json.loads(result.stdout.strip().splitlines()[-1])
-                    if not parsed.get("ok"):
-                        raise CoFHEAPIError(f"CoFHE bridge error: {parsed.get('error', stderr)}")
-                except (json.JSONDecodeError, KeyError):
-                    pass
-            raise CoFHEAPIError(f"CoFHE bridge failed: {stderr}")
+    def _read_response_line(self, process: subprocess.Popen) -> str:
+        """Read a single newline-terminated JSON line from stdout."""
+        stdout = process.stdout
+        if stdout is None:
+            raise CoFHEAPIError("CoFHE bridge stdout pipe is missing")
 
-        # Bridge may log to stdout before the final JSON line; take the last line
-        lines = result.stdout.strip().splitlines()
-        if not lines:
+        buffer = []
+        while True:
+            char = stdout.read(1)
+            if not char:
+                if self._process is not None and self._process.poll() is not None:
+                    raise CoFHEAPIError(
+                        f"CoFHE bridge process exited with code {self._process.returncode}"
+                    )
+                raise CoFHEAPIError("CoFHE bridge stdout closed unexpectedly")
+            if char == "\n":
+                break
+            buffer.append(char)
+
+        return "".join(buffer)
+
+    def _run_bridge_json(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Send *payload* to the persistent bridge and read the JSON response."""
+        self._validate_rpc()
+        process = self._ensure_process()
+
+        self._req_counter += 1
+        request_id = self._req_counter
+        payload = {**payload, "_requestId": request_id}
+
+        stdin = process.stdin
+        if stdin is None:
+            raise CoFHEAPIError("CoFHE bridge stdin pipe is missing")
+
+        line = json.dumps(payload) + "\n"
+        stdin.write(line)
+        stdin.flush()
+
+        raw = self._read_response_line(process)
+        if not raw.strip():
             raise CoFHEAPIError("CoFHE bridge produced no output")
 
         try:
-            parsed = json.loads(lines[-1])
+            response = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise CoFHEAPIError(f"CoFHE bridge returned invalid JSON: {lines[-1]}") from exc
+            raise CoFHEAPIError(f"CoFHE bridge returned invalid JSON: {raw[:200]}...") from exc
 
-        if not parsed.get("ok"):
-            raise CoFHEAPIError(f"CoFHE bridge error: {parsed.get('error', 'unknown')}")
+        if not response.get("ok"):
+            raise CoFHEAPIError(response.get("error") or "CoFHE bridge failed")
 
-        return parsed
+        return response
+
+    def close(self) -> None:
+        """Terminate the persistent bridge process."""
+        self._closed = True
+        if self._process is not None:
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=5)
+            except Exception:
+                pass
+            try:
+                self._process.kill()
+            except Exception:
+                pass
+            self._process = None
 
     def decrypt(self, ct_handle: int) -> int:
         # Fallback: use decrypt_prompt_key with a single handle (high) and ignore low

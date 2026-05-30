@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import readline from 'node:readline'
 
 installLocalStorageShim()
 
@@ -12,6 +13,9 @@ const [{ createCofheClient, createCofheConfig }, { Encryptable, FheTypes }, { ch
   import('viem'),
   import('viem/accounts'),
 ])
+
+let cachedClient = null
+let cachedKey = null
 
 function installLocalStorageShim() {
   if (globalThis.localStorage && typeof globalThis.localStorage.setItem === 'function') {
@@ -63,7 +67,12 @@ function installLocalStorageShim() {
   }
 }
 
-async function createClient(payload) {
+async function getOrCreateClient(payload) {
+  const cacheKey = `${payload.rpcUrl}:${payload.chainId || 421614}:${payload.privateKey || process.env.BLF_PRIVATE_KEY}`
+  if (cachedClient && cachedKey === cacheKey) {
+    return cachedClient
+  }
+
   const privateKey = payload.privateKey || process.env.BLF_PRIVATE_KEY
   const rpcUrl = payload.rpcUrl
 
@@ -97,27 +106,13 @@ async function createClient(payload) {
   const client = createCofheClient(config)
   await client.connect(publicClient, walletClient)
 
-  return { client, publicClient, walletClient, account }
-}
-
-async function parseJsonInput() {
-  return new Promise((resolve, reject) => {
-    let data = ''
-    process.stdin.setEncoding('utf8')
-    process.stdin.on('data', (chunk) => { data += chunk })
-    process.stdin.on('end', () => {
-      try {
-        resolve(JSON.parse(data))
-      } catch (err) {
-        reject(new Error('Invalid JSON stdin: ' + (err instanceof Error ? err.message : String(err))))
-      }
-    })
-    process.stdin.on('error', (err) => reject(err))
-  })
+  cachedClient = { client, publicClient, walletClient, account }
+  cachedKey = cacheKey
+  return cachedClient
 }
 
 async function decryptPromptKey(payload) {
-  const { client, account } = await createClient(payload)
+  const { client, account } = await getOrCreateClient(payload)
   const permit = await client.permits.getOrCreateSelfPermit(undefined, account.address, {
     issuer: account.address,
     name: payload.permitName || 'Blindference Prompt Key Permit',
@@ -140,7 +135,7 @@ async function decryptPromptKey(payload) {
 }
 
 async function encryptUint128(payload) {
-  const { client } = await createClient(payload)
+  const { client } = await getOrCreateClient(payload)
   const values = Array.isArray(payload.values) ? payload.values : []
   const encrypted = await client
     .encryptInputs(values.map((value) => Encryptable.uint128(BigInt(value))))
@@ -157,7 +152,7 @@ async function encryptUint128(payload) {
 }
 
 async function storePromptKey(payload) {
-  const { publicClient, walletClient } = await createClient(payload)
+  const { publicClient, walletClient } = await getOrCreateClient(payload)
 
   const promptKeyStoreAbi = [
     {
@@ -241,30 +236,61 @@ async function storePromptKey(payload) {
   return { txHash }
 }
 
-async function main() {
-  try {
-    const payload = await parseJsonInput()
-    let result
+async function processCommand(payload) {
+  let result
 
-    switch (payload.action) {
-      case 'decrypt_prompt_key':
-        result = await decryptPromptKey(payload)
-        break
-      case 'encrypt_uint128':
-        result = await encryptUint128(payload)
-        break
-      case 'store_prompt_key':
-        result = await storePromptKey(payload)
-        break
-      default:
-        throw new Error(`Unsupported action: ${payload.action}`)
+  switch (payload.action) {
+    case 'decrypt_prompt_key':
+      result = await decryptPromptKey(payload)
+      break
+    case 'encrypt_uint128':
+      result = await encryptUint128(payload)
+      break
+    case 'store_prompt_key':
+      result = await storePromptKey(payload)
+      break
+    default:
+      throw new Error(`Unsupported action: ${payload.action}`)
+  }
+
+  return result
+}
+
+async function main() {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    crlfDelay: Infinity,
+  })
+
+  for await (const line of rl) {
+    const trimmed = line.trim()
+    if (!trimmed) continue
+
+    let payload
+    try {
+      payload = JSON.parse(trimmed)
+    } catch (error) {
+      const response = { ok: false, error: `Invalid JSON: ${error.message}` }
+      process.stdout.write(`${JSON.stringify(response)}\n`)
+      continue
     }
 
-    process.stdout.write(`${JSON.stringify({ ok: true, ...result })}\n`)
-  } catch (error) {
-    process.stderr.write(`${error instanceof Error ? error.stack || error.message : String(error)}\n`)
-    process.stdout.write(`${JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) })}\n`)
-    process.exitCode = 1
+    try {
+      const result = await processCommand(payload)
+      const response = { ok: true, ...result }
+      if (payload._requestId) {
+        response._requestId = payload._requestId
+      }
+      process.stdout.write(`${JSON.stringify(response)}\n`)
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      process.stderr.write(`${error instanceof Error ? error.stack || errorMessage : errorMessage}\n`)
+      const response = { ok: false, error: errorMessage }
+      if (payload._requestId) {
+        response._requestId = payload._requestId
+      }
+      process.stdout.write(`${JSON.stringify(response)}\n`)
+    }
   }
 }
 
