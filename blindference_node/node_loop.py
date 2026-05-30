@@ -220,6 +220,7 @@ async def assignment_poller(
     """
     last_idle_log = 0
     in_flight: set[str] = set()
+    claimed: set[str] = set()  # Jobs already claimed with the ICL
 
     while not shutdown.is_set():
         try:
@@ -232,12 +233,19 @@ async def assignment_poller(
                     job_id = str(job.get("jobId", ""))
                     if not job_id:
                         continue
-                    if job_id in in_flight:
+                    if job_id in in_flight or job_id in claimed:
                         logger.debug(
-                            "Skipping duplicate assignment for job %s (already in-flight)",
+                            "Skipping duplicate assignment for job %s (already in-flight or claimed)",
                             job_id,
                         )
                         continue
+                    # Claim immediately so the ICL filters this job out next poll
+                    try:
+                        await icl.claim_task(job_id)
+                        claimed.add(job_id)
+                    except Exception as exc:
+                        logger.debug("Claim failed for job %s: %s", job_id, exc)
+                        # Still proceed; claim is best-effort
                     in_flight.add(job_id)
                     task = asyncio.create_task(
                         _job_wrapper(
