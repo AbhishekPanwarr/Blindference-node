@@ -27,19 +27,39 @@ def _build_gateway_url(gateway: str, cid: str) -> str:
 
 
 class IPFSClient:
-    """Async IPFS client with multi-gateway fallback.
+    """Async IPFS client with multi-gateway fallback and download cache.
 
     Uploads go through the Pinata pinning API.  Downloads try the
     configured *gateway_url* first, then rotate through a list of
     public fallback gateways before giving up.
+
+    Recently-downloaded blobs are cached in memory for 60 seconds
+    to avoid redundant gateway round-trips when multiple nodes process
+    the same prompt template.
 
     Args:
         gateway_url: Primary IPFS gateway base URL
             (e.g. ``https://node.lighthouse.storage``).
     """
 
+    _CACHE_TTL_SECONDS = 60
+
     def __init__(self, gateway_url: str) -> None:
         self._primary = gateway_url.rstrip("/")
+        self._cache: dict[str, tuple[bytes, float]] = {}
+
+    def _get_cached(self, cid: str) -> bytes | None:
+        entry = self._cache.get(cid)
+        if not entry:
+            return None
+        blob, cached_at = entry
+        if asyncio.get_event_loop().time() - cached_at > self._CACHE_TTL_SECONDS:
+            self._cache.pop(cid, None)
+            return None
+        return blob
+
+    def _set_cached(self, cid: str, blob: bytes) -> None:
+        self._cache[cid] = (blob, asyncio.get_event_loop().time())
 
     # ------------------------------------------------------------------
     # Upload
@@ -89,9 +109,10 @@ class IPFSClient:
     async def download(self, cid: str) -> bytes:
         """Download a blob from IPFS by CID across multiple gateways.
 
-        Tries the primary gateway first, then rotates through fallback
-        public gateways.  Each attempt uses a 15-second timeout so the
-        total budget across all gateways is ~60 s.
+        Tries the in-memory cache first (60-second TTL), then the primary
+        gateway, then rotates through fallback public gateways.
+        Each attempt uses a 15-second timeout so the total budget across
+        all gateways is ~60 s.
 
         Returns:
             The raw bytes.
@@ -99,6 +120,13 @@ class IPFSClient:
         Raises:
             RuntimeError: if every gateway fails or times out.
         """
+        # 0 — Check cache
+        cached = self._get_cached(cid)
+        if cached is not None:
+            logger = logging.getLogger("blindference-node.ipfs")
+            logger.debug("IPFS cache hit for CID=%s (%d bytes)", cid, len(cached))
+            return cached
+
         # Build ordered list of unique gateways to try
         gateways = [self._primary]
         for fallback in _FALLBACK_GATEWAYS:
@@ -122,7 +150,9 @@ class IPFSClient:
                             raise RuntimeError(
                                 f"HTTP {resp.status} from {gateway}: {text[:200]}"
                             )
-                        return await resp.read()
+                        blob = await resp.read()
+                        self._set_cached(cid, blob)
+                        return blob
             except asyncio.TimeoutError:
                 last_error = RuntimeError(
                     f"Gateway {gateway} timed out after 15s for CID={cid}"

@@ -113,34 +113,31 @@ async def _common_steps(
         logger.warning("Job %s: claim failed (%s) — continuing", job_id, exc)
         claim = {}
 
-    # 2 — Retrieve & reconstruct prompt key
-    _print_section("CoFHE Prompt Key Decrypt")
+    # 2 & 3 — Retrieve prompt key AND download encrypted prompt in parallel
     kp_high_handle = claim.get("kpHighHandle", 0)
     kp_low_handle = claim.get("kpLowHandle", 0)
     if not kp_high_handle or not kp_low_handle:
         logger.error("Job %s: missing CoFHE key handles — cannot decrypt prompt", job_id)
         return None
 
-    try:
+    async def _cofhe_decrypt() -> bytes:
+        _print_section("CoFHE Prompt Key Decrypt")
         high_val, low_val, _permit_hash = cofhe.decrypt_prompt_key(kp_high_handle, kp_low_handle)
-        kp = reconstruct_key(high_val, low_val)
         _print_kv("Permit hash", _permit_hash)
-    except Exception as exc:
-        logger.error("Job %s: CoFHE decrypt failed: %s", job_id, exc)
-        return None
+        return reconstruct_key(high_val, low_val)
 
-    # 3 — Download encrypted prompt
-    _print_section("Downloading Encrypted Prompt from IPFS")
-    try:
-        blob = await ipfs.download(prompt_cid)
+    async def _ipfs_download() -> bytes:
+        _print_section("Downloading Encrypted Prompt from IPFS")
+        data = await ipfs.download(prompt_cid)
         _print_kv("Prompt CID", prompt_cid)
-        _print_kv("Size", f"{len(blob)} bytes")
-        _print_kv(
-            "IPFS Gateway",
-            f"https://gateway.pinata.cloud/ipfs/{prompt_cid}",
-        )
+        _print_kv("Size", f"{len(data)} bytes")
+        _print_kv("IPFS Gateway", f"https://gateway.pinata.cloud/ipfs/{prompt_cid}")
+        return data
+
+    try:
+        kp, blob = await asyncio.gather(_cofhe_decrypt(), _ipfs_download())
     except Exception as exc:
-        logger.error("Job %s: IPFS download failed for CID=%s: %s", job_id, prompt_cid, exc)
+        logger.error("Job %s: parallel prompt key decrypt + IPFS download failed: %s", job_id, exc)
         return None
 
     # 4 — Decrypt prompt
@@ -351,7 +348,7 @@ async def _poll_leader_cid(
     Raises:
         ``asyncio.TimeoutError`` if the CID is not available within *timeout* seconds.
     """
-    delay = 2.0
+    delay = 0.5
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
@@ -359,7 +356,7 @@ async def _poll_leader_cid(
         except Exception as exc:
             logger.debug("Job %s: poll leader CID attempt failed (%s), retrying in %.1fs …", job_id, exc, delay)
             await asyncio.sleep(delay)
-            delay = min(delay * 2, 30)
+            delay = min(delay * 2, 10.0)
             continue
 
         cid = status.get("outputCid")
@@ -368,6 +365,6 @@ async def _poll_leader_cid(
 
         logger.debug("Job %s: leader CID not yet available, retrying in %.1fs …", job_id, delay)
         await asyncio.sleep(delay)
-        delay = min(delay * 2, 30)
+        delay = min(delay * 2, 10.0)
 
     raise asyncio.TimeoutError(f"Leader CID not available for job {job_id} after {timeout}s")
