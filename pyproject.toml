@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "blindference-node"
-version = "0.3.4"
+version = "0.3.5"
 description = "Blindference Node – Confidential inference worker for agentic AI."
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -46,3 +46,11 @@ blindference-node = "blindference_node.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["blindference_node*"]
+
+[tool.setuptools.package-data]
+blindference_node = [
+    "package.json",
+    "scripts/*.mjs",
+    "scripts/*.ts",
+    "contracts/abis/*.json",
+]
